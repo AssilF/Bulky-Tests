@@ -3,9 +3,13 @@
 #include <esp_now.h>
 #include <SPI.h>
 #include <Adafruit_PWMServoDriver.h>
-#include <NewPing.h>
 
 #include <U8g2lib.h>
+
+#include "sensors.h"
+#include "motion.h"
+#include "line.h"
+#include "comms.h"
 
 U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0);
 //this is the13th of october, my laptop apparently cannot even keep up with my rate of writing :D:D:D:
@@ -104,29 +108,11 @@ Adafruit_PWMServoDriver servo_bus = Adafruit_PWMServoDriver(0x40);
 #define craneOffset(angle) servo_bus.setPWM(craneShiftServo,0,map(angle,0,180,ServoMinimalPW,ServoMaximalPW))
 #define craneDeploy(angle) servo_bus.setPWM(craneDeployServo,0,map(angle,0,180,ServoMinimalPW,ServoMaximalPW))
 
-//Global Vars
-static int PWMFreq_US=100; //PWM frequency @ 100 microseconds yields 10KHz
-static int MLT_PWM = 0; //PWM must be between 1 and 99
-static int MLB_PWM = 0;
-static int MRT_PWM = 0;
-static int MRB_PWM = 0;
-static byte MotorPort=STOP;
-static byte MotionState=MOVE_FRONT;
-static int ticks=0;
-static bool MLTreset=1;
-static bool MLBreset=1;
-static bool MRTreset=1;
-static bool MRBreset=1;
-static int spinVar=0;
-static bool MotionMode; 
-#define LinearMotion 0
-#define DynamicMotion 1
-#define default_motion_state B00000000
-
 //Timers
 hw_timer_t *ShiftPWM_Handle = NULL;
 hw_timer_t *SpeedRetrieval_Handle = NULL;
 
+<<<<<<< HEAD
 //analog Data Retreival
 static int analog_index;
 static unsigned long analog_instance;
@@ -274,344 +260,14 @@ void IRAM_ATTR RB_ISR(){
   RB_SPEED_COUNT++;
   RBlastMicros=micros();}
   } //implement a timer to process the data or if else, implement a timing controlled polling system.
+=======
+>>>>>>> 327d605c805df3ffafb1cc00cf754745c26476eb
 
 
 
-static double MLT_WeightBuffer=0.000; //motors won't be rotating at the same speed right ?, we'll brute force them into rotating at the same speed by weighting each motor accordingly >:( , with data from the encoder.
-static double MLB_WeightBuffer=0.000; //the weight is calculated via a transfer function or something between 0.1 and 1, I still haven't done the math yet
-static double MRT_WeightBuffer=0.000;
-static double MRB_WeightBuffer=0.000;
-
-
-static unsigned long LT_SPEED_BUFFER;
-static unsigned long LB_SPEED_BUFFER;
-static unsigned long RT_SPEED_BUFFER;
-static unsigned long RB_SPEED_BUFFER;
-
-double LT_speed;
-double LB_speed;
-double RT_speed;
-double RB_speed;
-double average_count = .000;
-double Laverage_count = .000;
-double Raverage_count = .000;
-double totalTravel;
-double totalLeftTravel;
-double totalRightTravel;
-
-#define weight_iterations 5
-short weightIteration=0;
-
-#define EnableWeighting 0
-
-
-#define Cm_per_Count_Conversion 1.0362
-#define Cm_per_Second_Conversion 10.362 //0.314*0.076*6.6*3.14 //18 degrees, corresponding to 0.314 pi 6.6 mm travelled, times 1/0.076 (76ms) (we get cm per second) //let's make it 50ms
-
-void IRAM_ATTR retreiveSpeeds() //anyways, this step isn't really necessary but it's healthy for accuracy, so the bot doesn't count while doing calculations. . .
-{ //LB is a different sensor from the rest.
-  //we are taking speeds in reference to different positions @ 0.1s intervals
-
-  LT_SPEED_BUFFER = (LT_SPEED_COUNT-LT_SPEED_BUFFER);
-  LB_SPEED_BUFFER = (LB_SPEED_COUNT-LB_SPEED_BUFFER)/2;
-  RT_SPEED_BUFFER = (RT_SPEED_COUNT-RT_SPEED_BUFFER);
-  RB_SPEED_BUFFER = (RB_SPEED_COUNT-RB_SPEED_BUFFER);
-
-  LT_speed= (LT_SPEED_BUFFER)*Cm_per_Second_Conversion;//taking the difference between travel @ last instance;
-  LB_speed= (LB_SPEED_BUFFER)*Cm_per_Second_Conversion;
-  RT_speed= (RT_SPEED_BUFFER)*Cm_per_Second_Conversion;
-  RB_speed= (RB_SPEED_BUFFER)*Cm_per_Second_Conversion;
-
-  Laverage_count= (LT_SPEED_BUFFER+LB_SPEED_BUFFER)/2;
-  Raverage_count= (RT_SPEED_BUFFER+RB_SPEED_BUFFER)/2;
-  average_count=(Laverage_count+Raverage_count)/2;
-
-
-  #if EnableWeighting
-    if(weightIteration >= weight_iterations)
-  {
-   MLT_Weight= MLT_WeightBuffer/weight_iterations;
-   MLB_Weight= MLT_WeightBuffer/weight_iterations;
-   MRT_Weight= MLT_WeightBuffer/weight_iterations;
-   MRB_Weight= MLT_WeightBuffer/weight_iterations; 
-   MLT_WeightBuffer = 0.000;
-   MLB_WeightBuffer = 0.000;
-   MRT_WeightBuffer = 0.000;
-   MRB_WeightBuffer = 0.000;
-   weightIteration=0;
-  }
-
-  if((MotionState==MOVE_FRONT||MotionState==MOVE_BACK)&&MotionMode==LinearMotion){
-  MLT_WeightBuffer += (LT_SPEED_BUFFER/average_count);
-  MLB_WeightBuffer += (LB_SPEED_BUFFER/average_count);
-  MRT_WeightBuffer += (RT_SPEED_BUFFER/average_count);
-  MRB_WeightBuffer += (RB_SPEED_BUFFER/average_count);
-  }
-  else{
-  MLT_WeightBuffer += (LT_SPEED_BUFFER/Laverage_count);
-  MLB_WeightBuffer += (LB_SPEED_BUFFER/Laverage_count);
-
-  MRT_WeightBuffer += (RT_SPEED_BUFFER/Raverage_count);
-  MRB_WeightBuffer += (RB_SPEED_BUFFER/Raverage_count);  //maybe implement a buffer if you wanna get the overall linear distance moved to compensate for error from these two only. 
-  }
-  weightIteration++;  
-  }
-  #endif
-
-  LT_SPEED_BUFFER = LT_SPEED_COUNT;
-  LB_SPEED_BUFFER = LB_SPEED_COUNT;
-  RT_SPEED_BUFFER = RT_SPEED_COUNT;
-  RB_SPEED_BUFFER = RB_SPEED_COUNT; //these buffers must 180 degrees out of phase with the speed counts @ the given time intervals
-}
-
-
-void projectMotion(byte Motion, byte speed) //currently, this function has no means of smoothly decelerating the bot before switching directions so the bot may get a G spike if u suddenly reverse direction, but we'll implement something in the extra time.
-{
-  MotionState=Motion;
-   MLT_PWM=speed;
-   MLB_PWM=speed;
-   MRT_PWM=speed;
-   MRB_PWM=speed;
-}
-
-
-//Distance Feedback
-//library uses an independednt timer to drive the trigger pin so quickly the rail won't lose power.
-#define frontSonar 0
-#define botSonar 1
-
-NewPing sonar[2] = { 
-  NewPing(Front_US_Trig, Front_US_Echo), // Each sensor's trigger pin, echo pin, and max distance to ping.
-  NewPing(Bot_US_Trig, Bot_US_Echo)
-};
-
-int distanceIterations;
-unsigned long pingInstance;
-#define sonarPingInstance 2
-int front_distance_buffer;
-int bot_distance_buffer;
-int front_distance;
-int bot_distance;
-bool is_front_distance_ready;
-bool is_bot_distance_ready; //just having my freedom with ram out here :) 512KB is plenty for a reason.
-
-void getDistances()
-{
-  if(millis()-pingInstance >= sonarPingInstance){
-  if(distanceIterations<5){front_distance_buffer+=constrain(sonar[frontSonar].ping_cm(),0,45);}
-  else if(distanceIterations==5){if(front_distance_buffer/5 != 0){front_distance=front_distance_buffer;} front_distance_buffer=0;}
-  else if(distanceIterations<16){bot_distance_buffer+=constrain(sonar[botSonar].ping_cm(),0,30);}
-  else if(distanceIterations==16){if(bot_distance_buffer/10 != 0){bot_distance=bot_distance_buffer/10;};bot_distance_buffer=0;}
-  distanceIterations++;
-  if(distanceIterations>16){distanceIterations=0;}
-  pingInstance = millis();
-  } //this is intensive on the cpu a bit, but at least we'd get less noise and false triggers polluting our ultrasonic flags.
-
-} //I'll use this shit as is ou khlas.
-
-
-#define inverted_line 0
-#define non_inverted_line 1
-bool lineMode;
-#define line_transducer_number 4
-#define calibrationSamples 7
-#define calibrationTolerance //let's give it an arbitrary 400u of error at the time since the sensor has a steep curve
-// static int lineCalibrationArray[line_transducer_number][calibrationSamples];
-static int lineCalibrationArray[line_transducer_number];
-static int lineThresholdsUppers[line_transducer_number];
-static int lineThresholdsLowers[line_transducer_number];
-// static int upper_calibration_buffer;
-// static int lower_calibration_buffer;
-
-// void fetchLineMode() //+ Calibration; 
-// {//could be manual, could be automatic, I got no IDEA g ;)
-//   for(int i=1;i<=line_transducer_number;i++) //this is like, what ? extra 4 clock cycles ? let it be, in case I ran out of flops, we remove this loop and turn it into flash torture 
-//   {
-//     for(int j=1;j<=calibrationSamples;j++)
-//     {
-//       lineThresholdsLowers[i]= lineCalibrationArray[i][j-1]>=lineCalibrationArray[i][j] ? lineCalibrationArray[i][j] : lineCalibrationArray[i][j-1]; 
-//       lineThresholdsUppers[i]= lineCalibrationArray[i][j-1]<lineCalibrationArray[i][j] ? lineCalibrationArray[i][j] : lineCalibrationArray[i][j-1];
-//     }}
-
-//   //to figure out what line mode we have to add the linethresholds (lowers and upopers) for each transudcer and see which threshhold corresponds to an approximative gap.
-//   //the approximative gap could (and I said "COULD") be calculated by: taking the average of the calibration buffer, (aka calibration buffer/transudcer_number) and subtracting the corresponding line threshhold +- some arbitrary tolerance.
-//   //if one of the the calibration buffers' value isn't within the approximative gap and the other is within, you get your mode, upper = inverted, lower = non_inverted line mode.  
-//   upper_calibration_buffer=lineThresholdsUppers[0];//sum everything up
-//   lower_calibration_buffer=lineThresholdsLowers[0];
-// } //this is a bulkier calibration array that'll be too difficult to implement since the competition is in 2 days
-
-bool fetchingLineFlag;
-unsigned long lastLineFetchMillis;
-void fetchLineThresholds(byte period)
-{
-  if(fetchingLineFlag){fetchingLineFlag=0; lastLineFetchMillis=millis();
-  lineCalibrationArray[0]=sensor_readings[line_reading1];
-  lineCalibrationArray[1]=sensor_readings[line_reading2];
-  lineCalibrationArray[2]=sensor_readings[line_reading3];
-  lineCalibrationArray[3]=sensor_readings[line_reading4];
-  }
-  else if(millis()-lastLineFetchMillis<=period*1000)
-  {
-  sensor_readings[line_reading1]>=lineCalibrationArray[0]? lineThresholdsUppers[0]=sensor_readings[line_reading1] : lineThresholdsUppers[0]=lineCalibrationArray[0];
-  sensor_readings[line_reading2]>=lineCalibrationArray[1]? lineThresholdsUppers[1]=sensor_readings[line_reading2] : lineThresholdsUppers[1]=lineCalibrationArray[1];
-  sensor_readings[line_reading3]>=lineCalibrationArray[2]? lineThresholdsUppers[2]=sensor_readings[line_reading3] : lineThresholdsUppers[2]=lineCalibrationArray[2];
-  sensor_readings[line_reading4]>=lineCalibrationArray[3]? lineThresholdsUppers[3]=sensor_readings[line_reading4] : lineThresholdsUppers[3]=lineCalibrationArray[3]; //this could be optimized further more but we only calibrate once so whatever.
-
-  sensor_readings[line_reading1]<=lineCalibrationArray[0]? lineThresholdsLowers[0]=sensor_readings[line_reading1] : lineThresholdsLowers[0]=lineCalibrationArray[0];
-  sensor_readings[line_reading2]<=lineCalibrationArray[1]? lineThresholdsLowers[1]=sensor_readings[line_reading2] : lineThresholdsLowers[1]=lineCalibrationArray[1];
-  sensor_readings[line_reading3]<=lineCalibrationArray[2]? lineThresholdsLowers[2]=sensor_readings[line_reading3] : lineThresholdsLowers[2]=lineCalibrationArray[2];
-  sensor_readings[line_reading4]<=lineCalibrationArray[3]? lineThresholdsLowers[3]=sensor_readings[line_reading4] : lineThresholdsLowers[3]=lineCalibrationArray[3];
-
-  lineCalibrationArray[0]=sensor_readings[line_reading1];
-  lineCalibrationArray[1]=sensor_readings[line_reading2];
-  lineCalibrationArray[2]=sensor_readings[line_reading3];
-  lineCalibrationArray[3]=sensor_readings[line_reading4];
-  }
-  else{fetchingLineFlag=1;} //make it motorized by rotating it left and right.
-}
-
-#define line_right_most B00000001
-#define line_mid_right B00000011
-#define line_right B00000010
-#define line_left_most B00001000
-#define line_mid_left B00001100
-#define line_left B00000100
-#define line_target B00000110
-#define line_blank B00000000
-
-#define line_differentiation_iterations 4
-#define line_differentiation_duration 100
-
-byte linePosition = B00000000;
-
-byte processLine()
-{
-    linePosition=0;
-    if(lineMode? sensor_readings[line_reading1]<=lineThresholdsLowers[0]:sensor_readings[line_reading1]>=lineThresholdsLowers[0])
-    {
-      linePosition|= B00000001;
-    }
-    if(lineMode? sensor_readings[line_reading2]<=lineThresholdsLowers[1]:sensor_readings[line_reading2]>=lineThresholdsLowers[1])
-    {
-      linePosition|= B00000010;
-    }
-    if(lineMode? sensor_readings[line_reading3]<=lineThresholdsLowers[2]:sensor_readings[line_reading3]>=lineThresholdsLowers[2])
-    {
-      linePosition|= B00000100;
-    }
-    if(lineMode? sensor_readings[line_reading4]<=lineThresholdsLowers[3]:sensor_readings[line_reading4]>=lineThresholdsLowers[3])
-    {
-      linePosition|= B00001000;
-    }
-    return linePosition;
-}
-
-int baseSpeed=20; //
-double kd=0.0005;
-double kp=0.5;
-static double lastDeviationErr;
-
-double interpretPID(byte line, double lastErr) //recycled code from an old system.
-{
-  enablePIDReversal=0;
-  double error;
-  switch(line){
-  case B00000110:
-  error=0.00;
-  break;
-  case B00001111:
-  error=0.00;
-  break;
-  case B00000000:
-  error=lastErr/baseSpeed; enablePIDReversal=1;
-  break;
-  case B0000111:
-  error=-2; lastDeviationErr=error;
-  break;
-  case B00000011:
-  error=-1.5; lastDeviationErr=error;
-  break;
-  case B00000001:
-  error=-3; lastDeviationErr=error;
-  break;
-  case B00001110:
-  error=2; lastDeviationErr=error;
-
-  break;
-  case B00001100:
-  error=1.5; lastDeviationErr=error;
-  break;
-  case B00001000:
-    error=3; lastDeviationErr=error;
-  break;
-  default:
-  error=lastDeviationErr;
-  break;
-  }
-  debug("\n error: ")
-  debug(error)
-  error=((error-lastErr)*kd)+(error*kp);
-  return  baseSpeed*error;
-}
-
-void interpretLine(byte Old_Line, byte Current_Line) //you can control the bot behaviour depending on these interpretations, by enabling deviation or not.
-{
-    if(Old_Line==B00000110 && Current_Line==B00000110 )
-    {
-      Serial.println("Straight");
-      return;
-    }
-    if(Old_Line==B00000110 && Current_Line==B00001110 )
-    {
-      Serial.println("left");
-      return;
-    }
-    if(Old_Line==B00000110 && Current_Line==B00000111 )
-    {
-      Serial.println("right");
-      return;
-    }
-    if(Old_Line==B00000110 && Current_Line==B00000000 )
-    {
-      Serial.println("back");
-      return;
-    }
-        if(Old_Line==B00001111 && Current_Line==B00000110 )
-    {
-      Serial.println("Cross");
-      return;
-    }
-        if(Old_Line==B00001111 && Current_Line==B00000000 )
-    {
-      Serial.println("T");
-      return;
-    }
-}
-
-#define full_battery_level 2491
- //R1 21KΩ, R2 4.9kΩ, //Full = 12.6v, depleted = 10.8v, with the voltage divider we implemented, we are well within range I guess
-#define depleted_battery_level 2130 //Full charge = 2.384v ~ 3052, depleted = 2.04v ~ 2611, esp32 is sensitive up to 3.2v ~ 4096u, however, we need to compensate a drop of around 50mV due to the MUX action. around 640U
-static int batteryLevel;
-
-void processBattery() 
-{
-  batteryLevel=map(sensor_readings[battery_level],depleted_battery_level,full_battery_level,0,100); 
-}
-
-int IRBias;
-int fireRange = 3000;//usually, at about 10 centimeters of fire the voltage drops considerable on the analogpin so.  .  .
-#define FireTolerance //make these values modifiable by joystick
-
-void processIRImissions()
-{
-  if(sensor_readings[fire_detection_left] <= fireRange || sensor_readings[fire_detection_right] <= fireRange)
-  {
-  IRBias = map(sensor_readings[fire_detection_left]-sensor_readings[fire_detection_right],-fireRange,fireRange,0,180); //let's give it angles of 180 for now.
-  }
-} //if this appears to be this simple we might as well combine all of this one one single data set ya za7. . .
 
 //Modes
-static int operationMode;
+int operationMode;
 #define radioControlledMode 0
 #define lineFollowMode 1
 #define obstacleAvoidMode 2
@@ -630,96 +286,6 @@ void action()
 }
 
 
-//COMS
-uint8_t targetAddress[] = {0x78, 0x21, 0x84, 0x7E, 0x68, 0x1C}; //controller MAC 78:21:84:9A:58:28
-static esp_now_peer_info bot;
-
-static bool sent_Status;
-static bool receive_Status;
-
-//packet structs; these packets must NOT exceed 250bytes @ all costs!
-//Sent Packets
-struct receptionDataPacket
-{  
-  byte Speed;
-  byte MotionState;
-  byte pitch;
-  byte yaw;
-  bool bool1[4]; //corresponding to  the 3 buttons.
-}reception; //dummy packet
-
-struct emissionDataPacket
-{
-  byte INDEX;
-  byte statusByte;
-  int dataByte[8];
-  byte okIndex;
-}emission;
-
-//Coms Fcns
-void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) 
-{
-  // Serial.print("\r\nLast Packet Send Status:\t");
-  // Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Delivery Success" : "Delivery Fail");
-}
-
-void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
-  memcpy(&reception, incomingData, sizeof(reception));
-  receive_Status=1;
-}
-
-void packData(byte index)
-{
-  switch(index)
-  {
-    case 0:
-    emission.INDEX = index;
-    emission.dataByte[0] = linePosition;
-    emission.dataByte[1] = front_distance;
-    emission.dataByte[2] = bot_distance;
-    emission.dataByte[3] = IRBias;
-    emission.dataByte[4] = average_count*Cm_per_Second_Conversion;
-    emission.dataByte[5] = batteryLevel;
-    emission.dataByte[6] = operationMode;
-    break;
-
-    case 1:
-    emission.INDEX=index;
-    emission.dataByte[0] = sensor_readings[line_reading1];
-    emission.dataByte[1] = sensor_readings[line_reading2];
-    emission.dataByte[2] = sensor_readings[line_reading3];
-    emission.dataByte[3] = sensor_readings[line_reading4];
-    emission.dataByte[4] = lineThresholdsLowers[0];
-    emission.dataByte[5] = lineThresholdsLowers[1];
-    emission.dataByte[6] = lineThresholdsLowers[2];
-    emission.dataByte[7] = lineThresholdsLowers[3];
-    break;
-
-    case 2:
-    emission.INDEX= index;
-    emission.dataByte[0] = kp*100;
-    emission.dataByte[1] = kd*100;
-    emission.dataByte[3] = baseSpeed;
-    break;
-
-    case 3:
-    emission.INDEX= index;
-    emission.dataByte[0] = sensor_readings[fire_detection_left];
-    emission.dataByte[1] = sensor_readings[fire_detection_right];
-    emission.dataByte[3] = fireRange;
-    break;
-
-    default: 
-    break;
-  }
-}
-
-byte resendIndex;
-
-void processData(byte index)
-{
-  
-}
 
 void setup() {
   u8g2.begin();
@@ -850,38 +416,25 @@ byte Oldline=0;
 byte newLine;
 double lastLineError;
 double currentLineError;
-#define line_differentiation_sample_time 80 //80ms to differentiate the line
-#define line_sample_time 1 //80ms to differentiate the line
 
 void loop() {
   // if(receive_Status){receive_Status=0;setMotion(reception.vector[0],reception.vector[1]);}
   sense(); //nothing shall be freezing, instead, work with instances and ticks and polling.
-
-
-
   getDistances();
   processBattery();
   processIRImissions();
   lineMode=0;
-  lineThresholdsUppers[0]=1000;
-  lineThresholdsUppers[1]=1000;
-  lineThresholdsUppers[2]=1000;
-  lineThresholdsUppers[3]=1000;
-
   processLine();
-   
   projectMotion(reception.MotionState,reception.Speed);
-  if(reception.bool1[0]){pump(4096);}
-  else{pump(0);}
-  if(reception.bool1[1]){flash(4096);}
-  else{flash(0);}
-  if(reception.bool1[2]){sound(1300);}
-  else{sound(0);}
+  if(reception.bool1[0]){pump(4096);} else{pump(0);}
+  if(reception.bool1[1]){flash(4096);} else{flash(0);}
+  if(reception.bool1[2]){sound(1300);} else{sound(0);}
   if(reception.bool1[3])
   {
     camYaw(map(reception.yaw,0,180,0,90));
     camPitch(map(reception.pitch,0,180,0,90));
-  }else
+  }
+  else
   {
     craneOffset(reception.yaw);
     craneDeploy(reception.pitch);
@@ -893,7 +446,6 @@ void loop() {
 
   esp_err_t result = esp_now_send(targetAddress, (uint8_t *) &emission, sizeof(emission));
   if (result == ESP_OK) {
-    
-  }
 
+  }
 }
