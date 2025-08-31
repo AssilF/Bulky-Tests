@@ -49,7 +49,7 @@ Adafruit_PWMServoDriver servo_bus = Adafruit_PWMServoDriver(0x40);
 //pin defs
 #define LED_Pin 2
 #define Gripper_Pin 36
-#define Pump_Pin 12
+#define Pump_Pin 12 //if I was 1% smarter I'd put this on 14 and the other on 12
 #define Buzzer_Pin 14
 
 #define SRdata 23 // MSB 00 LT, 00 LB, 00 RT, 00 RB
@@ -130,7 +130,7 @@ hw_timer_t *SpeedRetrieval_Handle = NULL;
 //analog Data Retreival
 static int analog_index;
 static unsigned long analog_instance;
-#define analog_interval 7 //in microseconds, maybe make it a variable if you want to be able to change this via the controller 
+#define analog_interval 70 //in microseconds, maybe make it a variable if you want to be able to change this via the controller 
 #define battery_level 0
 #define line_reading1 3 //right most
 #define line_reading2 4
@@ -722,7 +722,6 @@ void processData(byte index)
 }
 
 void setup() {
-  verboseON
   u8g2.begin();
   //Pin Defs
   pinMode(SRdata,OUTPUT);
