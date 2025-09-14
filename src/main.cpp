@@ -289,10 +289,5 @@ void loop() {
 
   // debug("\reception Speed: ")debug(reception.Speed);
   // debug("\reception MotionState: ")debug(String(reception.MotionState,BIN));
-  packData(0);
-
-  esp_err_t result = esp_now_send(targetAddress, (uint8_t *) &emission, sizeof(emission));
-  if (result == ESP_OK) {
-
-  }
+  sendData(PACK_TELEMETRY);
 }
