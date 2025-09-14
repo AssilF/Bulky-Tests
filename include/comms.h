@@ -14,6 +14,15 @@ extern esp_now_peer_info bot;
 extern bool sent_Status;
 extern bool receive_Status;
 
+// Packet index definitions used when packing telemetry.
+enum PacketIndex : byte
+{
+  PACK_TELEMETRY = 0,
+  PACK_LINE      = 1,
+  PACK_PID       = 2,
+  PACK_FIRE      = 3,
+};
+
 // Communication data structures shared with the controller.
 struct receptionDataPacket
 {
@@ -42,6 +51,10 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len);
 
 // Populate emission packet with telemetry.
 void packData(byte index);
+
+// Pack telemetry for the given index and transmit via ESP-NOW.
+// Returns true if the packet was queued for sending successfully.
+bool sendData(byte index);
 
 // Process received packets (stub).
 void processData(byte index);
