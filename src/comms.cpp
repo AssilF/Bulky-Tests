@@ -4,314 +4,186 @@
 #include "motion.h"
 #include "sensors.h"
 
-#include <cctype>
 #include <cstring>
-#include <WiFi.h>
-#include <esp_err.h>
-
-extern int operationMode;
 
 namespace Comms {
-    static_assert(sizeof(ControlPacket) == 8, "ControlPacket must remain 8 bytes");
-    static_assert(sizeof(IdentityMessage) == 23, "IdentityMessage must remain 23 bytes");
+namespace {
+constexpr float CM_PER_SECOND_CONVERSION = 10.362f;
 
-    struct IliteCommand {
-        uint8_t replyIndex;
-        int8_t speed;
-        uint8_t motionState;
-        uint8_t buttonStates[3];
-    } __attribute__((packed));
+bool g_paired = false;
+ControlPacket g_lastCommand{};
+uint8_t g_controllerMac[6] = {0};
+uint32_t g_lastCommandTime = 0;
+uint32_t g_lastAckTime = 0;
+uint32_t g_lastIliteIdentityTime = 0;
+esp_now_recv_cb_t g_externalRecvCallback = nullptr;
 
-    static_assert(sizeof(IliteCommand) == 6, "IliteCommand must remain 6 bytes");
-
-    constexpr float CM_PER_SECOND_CONVERSION = 10.362f;
-
-    bool g_paired = false;
-    ControlPacket g_lastCommand{};
-    uint8_t g_controllerMac[6] = {0};
-    uint32_t g_lastCommandTime = 0;
-    uint32_t g_lastPairingAckTime = 0;
-    uint32_t g_lastIliteBroadcastTime = 0;
-    bool g_espNowInitialised = false;
-    esp_now_recv_cb_t g_externalRecvCallback = nullptr;
-
-    bool isBroadcastMac(const uint8_t *mac) {
-        if (mac == nullptr) {
+bool isBroadcastMac(const uint8_t *mac) {
+    if (mac == nullptr) {
+        return false;
+    }
+    for (size_t i = 0; i < 6; ++i) {
+        if (mac[i] != 0xff) {
             return false;
         }
-        for (size_t i = 0; i < 6; ++i) {
-            if (mac[i] != 0xff) {
-                return false;
-            }
+    }
+    return true;
+}
+
+bool macValid(const uint8_t *mac) {
+    if (mac == nullptr || isBroadcastMac(mac)) {
+        return false;
+    }
+    for (size_t i = 0; i < 6; ++i) {
+        if (mac[i] != 0) {
+            return true;
         }
-        return true;
+    }
+    return false;
+}
+
+void copyMac(uint8_t (&dest)[6], const uint8_t *src) {
+    if (src == nullptr) {
+        return;
+    }
+    std::memcpy(dest, src, sizeof(dest));
+}
+
+void ensurePeer(const uint8_t *mac) {
+    if (!macValid(mac)) {
+        return;
+    }
+    if (esp_now_is_peer_exist(mac)) {
+        return;
     }
 
-    bool macValid(const uint8_t *mac) {
-        if (mac == nullptr || isBroadcastMac(mac)) {
-            return false;
-        }
-        for (size_t i = 0; i < 6; ++i) {
-            if (mac[i] != 0) {
-                return true;
-            }
-        }
+    esp_now_peer_info_t peerInfo{};
+    std::memcpy(peerInfo.peer_addr, mac, 6);
+    peerInfo.channel = 0;
+    peerInfo.encrypt = false;
+    esp_now_add_peer(&peerInfo);
+}
+
+void setControllerMac(const uint8_t *mac) {
+    if (!macValid(mac)) {
+        return;
+    }
+
+    ensurePeer(mac);
+    copyMac(g_controllerMac, mac);
+    g_paired = true;
+}
+
+void sendIdentityMessage(uint8_t type, const uint8_t *target) {
+    IdentityMessage msg{};
+    msg.type = type;
+    std::strncpy(msg.identity, "Bulky", sizeof(msg.identity) - 1);
+    WiFi.macAddress(msg.mac);
+
+    const uint8_t *destination = macValid(target) ? target : BroadcastMac;
+    if (macValid(destination)) {
+        ensurePeer(destination);
+    }
+    esp_now_send(destination, reinterpret_cast<const uint8_t *>(&msg), sizeof(msg));
+}
+
+void sendAck() {
+    if (!macValid(g_controllerMac)) {
+        return;
+    }
+    sendIdentityMessage(DRONE_ACK, g_controllerMac);
+    g_lastAckTime = millis();
+}
+
+void handleIdentityMessage(const uint8_t *mac, const IdentityMessage *msg) {
+    if (msg == nullptr) {
+        return;
+    }
+
+    const uint8_t *candidateMac = macValid(msg->mac) ? msg->mac : mac;
+
+    switch (msg->type) {
+        case ILITE_IDENTITY:
+            g_lastIliteIdentityTime = millis();
+            setControllerMac(candidateMac);
+            sendIdentityMessage(DRONE_IDENTITY, candidateMac);
+            sendAck();
+            break;
+        case SCAN_REQUEST:
+            sendIdentityMessage(DRONE_IDENTITY, candidateMac);
+            break;
+        default:
+            break;
+    }
+}
+
+void handleControlPacket(const uint8_t *mac, const ControlPacket *cmd) {
+    if (cmd == nullptr) {
+        return;
+    }
+
+    setControllerMac(mac);
+    g_lastCommand = *cmd;
+    g_lastCommandTime = millis();
+    sendAck();
+}
+
+void IRAM_ATTR onEspNowDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
+    if (mac == nullptr || incomingData == nullptr) {
+        return;
+    }
+
+    if (g_externalRecvCallback) {
+        g_externalRecvCallback(mac, incomingData, len);
+    }
+
+    if (len == static_cast<int>(sizeof(IdentityMessage))) {
+        const auto *msg = reinterpret_cast<const IdentityMessage *>(incomingData);
+        handleIdentityMessage(mac, msg);
+        return;
+    }
+
+    if (len == static_cast<int>(sizeof(ControlPacket))) {
+        const auto *cmd = reinterpret_cast<const ControlPacket *>(incomingData);
+        handleControlPacket(mac, cmd);
+        return;
+    }
+}
+
+bool initInternal(const char *ssid, const char *password, int tcpPort, esp_now_recv_cb_t recvCallback) {
+    (void)tcpPort;
+
+    WiFi.mode(WIFI_AP_STA);
+    WiFi.setSleep(false);
+    WiFi.softAP(ssid, password);
+
+    if (esp_now_init() != ESP_OK) {
         return false;
     }
 
-    bool identityContains(const IdentityMessage &msg, const char *needle) {
-        if (needle == nullptr || needle[0] == '\0') {
-            return false;
-        }
-        const size_t maxLen = sizeof(msg.identity);
-        const size_t needleLen = std::strlen(needle);
-        if (needleLen == 0 || needleLen > maxLen) {
-            return false;
-        }
-
-        for (size_t start = 0; start + needleLen <= maxLen; ++start) {
-            if (msg.identity[start] == '\0') {
-                break;
-            }
-
-            bool match = true;
-            for (size_t i = 0; i < needleLen; ++i) {
-                size_t idx = start + i;
-                if (idx >= maxLen) {
-                    match = false;
-                    break;
-                }
-                char actual = msg.identity[idx];
-                if (actual == '\0') {
-                    match = false;
-                    break;
-                }
-                char expected = needle[i];
-                actual = static_cast<char>(std::toupper(static_cast<unsigned char>(actual)));
-                expected = static_cast<char>(std::toupper(static_cast<unsigned char>(expected)));
-                if (actual != expected) {
-                    match = false;
-                    break;
-                }
-            }
-
-            if (match) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    bool isEliteControllerIdentity(const IdentityMessage &msg) {
-        if (msg.type == ILITE_IDENTITY || msg.type == ELITE_IDENTITY) {
-            return true;
-        }
-        if (identityContains(msg, "ILITE")) {
-            return true;
-        }
-        if (identityContains(msg, "ELITE")) {
-            return true;
-        }
-        return false;
-    }
-
-    bool isIliteIdentity(const IdentityMessage &msg) {
-        if (msg.type == ILITE_IDENTITY) {
-            return true;
-        }
-        return identityContains(msg, "ILITE");
-    }
-
-    const uint8_t *selectValidMac(const IdentityMessage *msg, const uint8_t *fallback) {
-        if (msg && macValid(msg->mac)) {
-            return msg->mac;
-        }
-        if (macValid(fallback)) {
-            return fallback;
-        }
-        return BroadcastMac;
-    }
-
-    void ensurePeerRegistered(const uint8_t *mac) {
-        if (!macValid(mac)) {
-            return;
-        }
-        if (esp_now_is_peer_exist(mac)) {
-            return;
-        }
-
-        esp_now_peer_info_t peerInfo{};
-        memcpy(peerInfo.peer_addr, mac, 6);
-        peerInfo.channel = 0;
-        peerInfo.encrypt = false;
+    esp_now_peer_info_t peerInfo{};
+    std::memcpy(peerInfo.peer_addr, BroadcastMac, 6);
+    peerInfo.channel = 0;
+    peerInfo.encrypt = false;
+    if (!esp_now_is_peer_exist(BroadcastMac)) {
         esp_now_add_peer(&peerInfo);
     }
 
-    void respondWithIdentity(const IdentityMessage *request, const uint8_t *mac) {
-        const uint8_t *primary = request ? request->mac : nullptr;
-        if (macValid(primary)) {
-            ensurePeerRegistered(primary);
-        }
-        if (macValid(mac)) {
-            ensurePeerRegistered(mac);
-        }
+    g_externalRecvCallback = recvCallback;
+    esp_now_register_recv_cb(onEspNowDataRecv);
 
-        const uint8_t *target = selectValidMac(request, mac);
+    g_paired = false;
+    std::memset(&g_lastCommand, 0, sizeof(g_lastCommand));
+    std::memset(g_controllerMac, 0, sizeof(g_controllerMac));
+    g_lastCommandTime = 0;
+    g_lastAckTime = 0;
+    g_lastIliteIdentityTime = 0;
+    resendIndex = 0;
+    std::memset(&emission, 0, sizeof(emission));
 
-        IdentityMessage resp{};
-        resp.type = DRONE_IDENTITY;
-        strncpy(resp.identity, "Bulky", sizeof(resp.identity) - 1);
-        WiFi.macAddress(resp.mac);
-        esp_now_send(target, reinterpret_cast<const uint8_t *>(&resp), sizeof(resp));
-    }
-
-    void acknowledgeController(const uint8_t *mac) {
-        if (mac == nullptr) {
-            return;
-        }
-        IdentityMessage ack{};
-        ack.type = DRONE_ACK;
-        strncpy(ack.identity, "Bulky", sizeof(ack.identity) - 1);
-        WiFi.macAddress(ack.mac);
-        esp_now_send(mac, reinterpret_cast<const uint8_t *>(&ack), sizeof(ack));
-    }
-
-    bool controllerMacValid() {
-        return macValid(g_controllerMac);
-    }
-
-    void handleIliteCommand(const uint8_t *mac, const IliteCommand *cmd) {
-        if (mac == nullptr || cmd == nullptr) {
-            return;
-        }
-        ensurePeerRegistered(mac);
-
-        if (!controllerMacValid() || memcmp(g_controllerMac, mac, 6) != 0) {
-            memcpy(g_controllerMac, mac, 6);
-        }
-
-        ControlPacket converted = g_lastCommand;
-
-        int speed = static_cast<int>(cmd->speed);
-        if (speed < 0) {
-            speed = -speed;
-        }
-        if (speed > 100) {
-            speed = 100;
-        }
-
-        converted.Speed = static_cast<uint8_t>(speed);
-        converted.MotionState = cmd->motionState;
-        converted.bool1[0] = cmd->buttonStates[0] != 0;
-        converted.bool1[1] = cmd->buttonStates[1] != 0;
-        converted.bool1[2] = cmd->buttonStates[2] != 0;
-
-        g_lastCommand = converted;
-        g_lastCommandTime = millis();
-        g_paired = true;
-    }
-
-    void IRAM_ATTR onEspNowDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
-        if (mac == nullptr || incomingData == nullptr) {
-            return;
-        }
-
-        if (g_externalRecvCallback) {
-            g_externalRecvCallback(mac, incomingData, len);
-        }
-        if (len == static_cast<int>(sizeof(IdentityMessage))) {
-            const IdentityMessage *msg = reinterpret_cast<const IdentityMessage *>(incomingData);
-            if (isIliteIdentity(*msg) && !macValid(msg->mac)) {
-                g_lastIliteBroadcastTime = millis();
-                respondWithIdentity(msg, mac);
-                return;
-            }
-            if (msg->type == SCAN_REQUEST) {
-                respondWithIdentity(msg, mac);
-                return;
-            }
-            if (isEliteControllerIdentity(*msg)) {
-                const uint8_t *primaryMac = macValid(msg->mac) ? msg->mac : nullptr;
-                const uint8_t *fallbackMac = macValid(mac) ? mac : nullptr;
-                const uint8_t *targetMac = primaryMac ? primaryMac : fallbackMac;
-
-                if (primaryMac) {
-                    ensurePeerRegistered(primaryMac);
-                }
-                if (fallbackMac) {
-                    ensurePeerRegistered(fallbackMac);
-                }
-                if (targetMac) {
-                    if (!controllerMacValid() || memcmp(g_controllerMac, targetMac, 6) != 0) {
-                        memcpy(g_controllerMac, targetMac, 6);
-                    }
-                    g_paired = true;
-                    uint32_t now = millis();
-                    g_lastCommandTime = now;
-                    g_lastPairingAckTime = now;
-                    acknowledgeController(targetMac);
-                }
-                return;
-            }
-        }
-
-        if (len == static_cast<int>(sizeof(ControlPacket))) {
-            const ControlPacket *cmd = reinterpret_cast<const ControlPacket *>(incomingData);
-            g_lastCommand = *cmd;
-            g_lastCommandTime = millis();
-            g_paired = true;
-            if (macValid(mac) && (!controllerMacValid() || memcmp(g_controllerMac, mac, 6) != 0)) {
-                memcpy(g_controllerMac, mac, 6);
-            }
-            ensurePeerRegistered(mac);
-            return;
-        }
-
-        if (len == static_cast<int>(sizeof(IliteCommand))) {
-            const IliteCommand *cmd = reinterpret_cast<const IliteCommand *>(incomingData);
-            handleIliteCommand(mac, cmd);
-            return;
-        };
-    }
-
-
-    bool initInternal(const char *ssid, const char *password, int tcpPort, esp_now_recv_cb_t recvCallback) {
-        (void)tcpPort;
-        Serial.println("Initialising Comms");
-
-        WiFi.mode(WIFI_AP_STA);
-
-        WiFi.setSleep(false);
-        WiFi.softAP(ssid, password);
-
-        WiFi.setTxPower(WIFI_POWER_19_5dBm);
-
-
-        esp_now_init();
-
-        g_espNowInitialised = true;
-
-        esp_now_peer_info_t peerInfo{};
-        memcpy(peerInfo.peer_addr, BroadcastMac, 6);
-        peerInfo.channel = 0;
-        peerInfo.encrypt = false;
-        if (!esp_now_is_peer_exist(BroadcastMac)) {
-            esp_now_add_peer(&peerInfo);
-        }
-
-        g_externalRecvCallback = recvCallback;
-        esp_now_register_recv_cb(&onEspNowDataRecv);
-        delay(10);
-        g_paired = false;
-        memset(g_controllerMac, 0, sizeof(g_controllerMac));
-        g_lastCommand = ControlPacket{};
-        g_lastCommandTime = 0;
-        g_lastPairingAckTime = 0;
-        g_lastIliteBroadcastTime = 0;
-        resendIndex = 0;
-        memset(&emission, 0, sizeof(emission));
-        return true;
-    } // namespace
+    return true;
+}
+} // namespace
 
 TelemetryPacket emission{};
 uint8_t resendIndex = 0;
@@ -319,12 +191,10 @@ uint8_t resendIndex = 0;
 const uint8_t BroadcastMac[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 
 bool init(const char *ssid, const char *password, int tcpPort) {
-    Serial.println("Initialising Comms with custom recv callback");
     return initInternal(ssid, password, tcpPort, nullptr);
 }
 
 bool init(const char *ssid, const char *password, int tcpPort, esp_now_recv_cb_t recvCallback) {
-    Serial.println("Initialising Comms with custom recv callback");
     return initInternal(ssid, password, tcpPort, recvCallback);
 }
 
@@ -378,7 +248,7 @@ void packTelemetry(PacketIndex index, TelemetryPacket &packet) {
 }
 
 bool sendTelemetry(const TelemetryPacket &packet) {
-    if (!g_paired || !controllerMacValid()) {
+    if (!g_paired || !macValid(g_controllerMac)) {
         return false;
     }
 
@@ -402,7 +272,7 @@ uint32_t lastCommandTimeMs() {
 }
 
 uint32_t lastPairingAckTimeMs() {
-    return g_lastPairingAckTime;
+    return g_lastAckTime;
 }
 
 const uint8_t *controllerMac() {
@@ -410,7 +280,7 @@ const uint8_t *controllerMac() {
 }
 
 uint32_t lastIliteBroadcastTimeMs() {
-    return g_lastIliteBroadcastTime;
+    return g_lastIliteIdentityTime;
 }
-}
+} // namespace Comms
 
