@@ -30,6 +30,7 @@ namespace {
     uint8_t g_controllerMac[6] = {0};
     uint32_t g_lastCommandTime = 0;
     uint32_t g_lastPairingAckTime = 0;
+    uint32_t g_lastIliteBroadcastTime = 0;
 
     bool isBroadcastMac(const uint8_t *mac) {
         if (mac == nullptr) {
@@ -109,6 +110,13 @@ namespace {
             return true;
         }
         return false;
+    }
+
+    bool isIliteIdentity(const IdentityMessage &msg) {
+        if (msg.type == ILITE_IDENTITY) {
+            return true;
+        }
+        return identityContains(msg, "ILITE");
     }
 
     const uint8_t *selectValidMac(const IdentityMessage *msg, const uint8_t *fallback) {
@@ -206,6 +214,11 @@ namespace {
         }
         if (len == static_cast<int>(sizeof(IdentityMessage))) {
             const IdentityMessage *msg = reinterpret_cast<const IdentityMessage *>(incomingData);
+            if (isIliteIdentity(*msg) && !macValid(msg->mac)) {
+                g_lastIliteBroadcastTime = millis();
+                respondWithIdentity(msg, mac);
+                return;
+            }
             if (msg->type == SCAN_REQUEST) {
                 respondWithIdentity(msg, mac);
                 return;
@@ -285,6 +298,7 @@ namespace {
         g_lastCommand = ControlPacket{};
         g_lastCommandTime = 0;
         g_lastPairingAckTime = 0;
+        g_lastIliteBroadcastTime = 0;
         resendIndex = 0;
         memset(&emission, 0, sizeof(emission));
         return true;
@@ -383,6 +397,10 @@ uint32_t lastPairingAckTimeMs() {
 
 const uint8_t *controllerMac() {
     return g_controllerMac;
+}
+
+uint32_t lastIliteBroadcastTimeMs() {
+    return g_lastIliteBroadcastTime;
 }
 
 } // namespace Comms
