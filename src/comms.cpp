@@ -29,9 +29,22 @@ namespace {
     ControlPacket g_lastCommand{};
     uint8_t g_controllerMac[6] = {0};
     uint32_t g_lastCommandTime = 0;
+    uint32_t g_lastPairingAckTime = 0;
+
+    bool isBroadcastMac(const uint8_t *mac) {
+        if (mac == nullptr) {
+            return false;
+        }
+        for (size_t i = 0; i < 6; ++i) {
+            if (mac[i] != 0xff) {
+                return false;
+            }
+        }
+        return true;
+    }
 
     bool macValid(const uint8_t *mac) {
-        if (mac == nullptr) {
+        if (mac == nullptr || isBroadcastMac(mac)) {
             return false;
         }
         for (size_t i = 0; i < 6; ++i) {
@@ -196,7 +209,9 @@ namespace {
                         memcpy(g_controllerMac, targetMac, 6);
                     }
                     g_paired = true;
-                    g_lastCommandTime = millis();
+                    uint32_t now = millis();
+                    g_lastCommandTime = now;
+                    g_lastPairingAckTime = now;
                     acknowledgeController(targetMac);
                 }
                 return;
@@ -252,6 +267,7 @@ namespace {
         memset(g_controllerMac, 0, sizeof(g_controllerMac));
         g_lastCommand = ControlPacket{};
         g_lastCommandTime = 0;
+        g_lastPairingAckTime = 0;
         resendIndex = 0;
         memset(&emission, 0, sizeof(emission));
         return true;
@@ -342,6 +358,10 @@ bool sendTelemetry(PacketIndex index) {
 
 uint32_t lastCommandTimeMs() {
     return g_lastCommandTime;
+}
+
+uint32_t lastPairingAckTimeMs() {
+    return g_lastPairingAckTime;
 }
 
 const uint8_t *controllerMac() {

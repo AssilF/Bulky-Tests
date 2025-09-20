@@ -53,6 +53,7 @@ bool sendTelemetry(const TelemetryPacket &packet);
 bool sendTelemetry(PacketIndex index);
 
 uint32_t lastCommandTimeMs();
+uint32_t lastPairingAckTimeMs();
 const uint8_t *controllerMac();
 
 extern const uint8_t BroadcastMac[6];
