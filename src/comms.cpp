@@ -211,10 +211,7 @@ namespace {
     }
 
     void onDataRecvInternal(const uint8_t *mac, const uint8_t *incomingData, int len) {
-        ledcWriteTone(2,380);
-        delay(10);
-        Serial.println("Recieved something");
-        delay(10);
+
         if (mac == nullptr || incomingData == nullptr) {
             return;
         }
@@ -280,17 +277,17 @@ namespace {
     bool initInternal(const char *ssid, const char *password, int tcpPort, esp_now_recv_cb_t recvCallback) {
         (void)tcpPort;
         Serial.println("Initialising Comms");
-            delay(10);
+
         WiFi.mode(WIFI_AP_STA);
-            delay(10);
+
         WiFi.setSleep(false);
         WiFi.softAP(ssid, password);
-            delay(10);
+
         WiFi.setTxPower(WIFI_POWER_19_5dBm);
-            delay(100);
+
 
         esp_now_init();
-        delay(10);
+
         g_espNowInitialised = true;
 
         esp_now_peer_info_t peerInfo{};
@@ -302,8 +299,8 @@ namespace {
         }
 
         g_externalRecvCallback = recvCallback;
-        esp_now_register_recv_cb(&onDataRecvInternal);
-        delay(10);
+        esp_now_register_recv_cb(recvCallback? recvCallback : onDataRecvInternal);
+
         g_paired = false;
         memset(g_controllerMac, 0, sizeof(g_controllerMac));
         g_lastCommand = ControlPacket{};
