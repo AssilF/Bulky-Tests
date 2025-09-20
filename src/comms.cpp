@@ -30,6 +30,9 @@ namespace {
     uint32_t g_lastCommandTime = 0;
 
     void respondWithIdentity(const uint8_t *mac) {
+        if (mac == nullptr) {
+            return;
+        }
         IdentityMessage resp{};
         resp.type = DRONE_IDENTITY;
         strncpy(resp.identity, "Bulky", sizeof(resp.identity) - 1);
@@ -38,12 +41,18 @@ namespace {
     }
 
     void acknowledgeController(const uint8_t *mac) {
+        if (mac == nullptr) {
+            return;
+        }
         IdentityMessage ack{};
         ack.type = DRONE_ACK;
         esp_now_send(mac, reinterpret_cast<const uint8_t *>(&ack), sizeof(ack));
     }
 
     void ensurePeerRegistered(const uint8_t *mac) {
+        if (mac == nullptr) {
+            return;
+        }
         if (esp_now_is_peer_exist(mac)) {
             return;
         }
@@ -65,6 +74,9 @@ namespace {
     }
 
     void handleIliteCommand(const uint8_t *mac, const IliteCommand *cmd) {
+        if (mac == nullptr || cmd == nullptr) {
+            return;
+        }
         ensurePeerRegistered(mac);
 
         if (!controllerMacValid()) {
@@ -93,6 +105,9 @@ namespace {
     }
 
     void onDataRecvInternal(const uint8_t *mac, const uint8_t *incomingData, int len) {
+        if (mac == nullptr || incomingData == nullptr) {
+            return;
+        }
         if (len == static_cast<int>(sizeof(IdentityMessage))) {
             const IdentityMessage *msg = reinterpret_cast<const IdentityMessage *>(incomingData);
             if (msg->type == SCAN_REQUEST) {
