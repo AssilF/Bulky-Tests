@@ -10,8 +10,8 @@
 #include "motion.h"
 #include "line.h"
 #include "main.h"
-#include "comm/BulkyPackets.h"
-#include "comm/PeerRegistry.h"
+#include "BulkyPackets.h"
+#include "PeerRegistry.h"
 #include "system/AudioFeedback.h"
 #include "EspNowDiscovery.h"
 

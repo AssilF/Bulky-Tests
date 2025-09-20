@@ -10,7 +10,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/portmacro.h>
 
-#include "comm/BulkyPackets.h"
+#include "BulkyPackets.h"
 
 namespace Comm {
 

@@ -7,8 +7,8 @@
 #include <esp_now.h>
 #include <freertos/portmacro.h>
 
-#include "comm/BulkyPackets.h"
-#include "comm/PeerRegistry.h"
+#include "BulkyPackets.h"
+#include "PeerRegistry.h"
 
 class EspNowDiscovery {
  public:

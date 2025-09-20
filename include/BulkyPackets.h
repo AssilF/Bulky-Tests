@@ -48,7 +48,7 @@ struct ControlPayload {
 } __attribute__((packed));
 
 struct ControlPacket {
-  PacketHeader header{ {kPacketMagic, kProtocolVersion, MessageType::Control, 0} };
+  PacketHeader header{ kPacketMagic, kProtocolVersion, MessageType::Control, 0 };
   ControlPayload payload;
 } __attribute__((packed));
 
@@ -61,7 +61,7 @@ struct FeedbackPayload {
 } __attribute__((packed));
 
 struct FeedbackPacket {
-  PacketHeader header{ {kPacketMagic, kProtocolVersion, MessageType::Feedback, 0} };
+  PacketHeader header{ kPacketMagic, kProtocolVersion, MessageType::Feedback, 0 };
   FeedbackPayload payload;
 } __attribute__((packed));
 

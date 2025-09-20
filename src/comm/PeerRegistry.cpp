@@ -1,4 +1,4 @@
-#include "comm/PeerRegistry.h"
+#include "PeerRegistry.h"
 
 #include <algorithm>
 
