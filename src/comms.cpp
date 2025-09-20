@@ -115,6 +115,7 @@ namespace {
         if (mac == nullptr) {
             return;
         }
+        ensurePeerRegistered(mac);
         IdentityMessage resp{};
         resp.type = DRONE_IDENTITY;
         strncpy(resp.identity, "Bulky", sizeof(resp.identity) - 1);
