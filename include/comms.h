@@ -4,36 +4,26 @@
 #include <WiFi.h>
 #include <esp_now.h>
 
+#include "thegill.h"
+
 namespace Comms {
 
-struct ControlPacket {
-    uint8_t Speed;
-    uint8_t MotionState;
-    uint8_t pitch;
-    uint8_t yaw;
-    bool bool1[4];
-} __attribute__((packed));
-
-enum PacketIndex : uint8_t {
-    PACK_TELEMETRY = 0,
-    PACK_LINE = 1,
-    PACK_PID = 2,
-    PACK_FIRE = 3,
-};
-
 struct TelemetryPacket {
-    uint8_t INDEX;
-    uint8_t statusByte;
-    int dataByte[8];
-    uint8_t okIndex;
+    uint32_t magic;                // Should be PACKET_MAGIC
+    float pitch, roll, yaw;        // Orientation in degrees
+    float leftFrontActual, leftRearActual, rightFrontActual; // Normalized motor outputs
+    uint16_t rightRearActual;      // Encoded right-rear output (0-2000 => -1000..1000)
+    int8_t leftFrontTarget, rightFrontTarget, leftRearTarget; // Target commands compressed to int8
+    float verticalAcc;             // Vertical acceleration in m/s^2
+    uint32_t commandAge;           // Age of last command in ms
 } __attribute__((packed));
 
 enum PairingType : uint8_t {
     SCAN_REQUEST = 0x01,
     DRONE_IDENTITY = 0x02,
     ILITE_IDENTITY = 0x03,
-    DRONE_ACK = 0x04,
     ELITE_IDENTITY = 0x05,
+    DRONE_ACK = 0x04,
 };
 
 struct IdentityMessage {
@@ -44,22 +34,12 @@ struct IdentityMessage {
 
 bool init(const char *ssid, const char *password, int tcpPort);
 bool init(const char *ssid, const char *password, int tcpPort, esp_now_recv_cb_t recvCallback);
-
-bool receiveCommand(ControlPacket &cmd);
+bool receiveCommand(ThegillCommand &cmd);
 bool paired();
-
-void packTelemetry(PacketIndex index, TelemetryPacket &packet);
-bool sendTelemetry(const TelemetryPacket &packet);
-bool sendTelemetry(PacketIndex index);
-
 uint32_t lastCommandTimeMs();
 uint32_t lastPairingAckTimeMs();
-const uint8_t *controllerMac();
-uint32_t lastIliteBroadcastTimeMs();
 
 extern const uint8_t BroadcastMac[6];
-extern TelemetryPacket emission;
-extern uint8_t resendIndex;
 
 } // namespace Comms
 
