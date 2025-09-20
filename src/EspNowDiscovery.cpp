@@ -8,7 +8,6 @@
 #include <cstring>
 
 namespace {
-constexpr uint32_t kScanBroadcastIntervalMs = 750;
 constexpr uint32_t kPeerStaleTimeoutMs = 5000;
 EspNowDiscovery *g_instance = nullptr;
 
@@ -18,6 +17,7 @@ constexpr uint8_t kIliteControllerIdentityType = 0x03;
 constexpr uint8_t kIliteDroneAckType = 0x04;
 constexpr size_t kIliteIdentityLength = 16;
 constexpr char kIliteControllerIdentity[] = "ILITEA1";
+constexpr char kBulkyIdentity[] = "Bulky";
 
 struct IliteIdentityMessage {
   uint8_t type = 0;
@@ -63,16 +63,16 @@ bool EspNowDiscovery::begin() {
   }
   WiFi.softAPsetHostname("Bulky");
 
-  WiFi.macAddress(controllerMac_.data());
+  WiFi.macAddress(localMac_.data());
   bool macValid = false;
-  for (auto byte : controllerMac_) {
+  for (auto byte : localMac_) {
     if (byte != 0) {
       macValid = true;
       break;
     }
   }
   if (!macValid) {
-    Serial.println("[ESP-NOW] Failed to read controller MAC");
+    Serial.println("[ESP-NOW] Failed to read Bulky MAC");
     return false;
   }
 
@@ -95,8 +95,8 @@ bool EspNowDiscovery::begin() {
     }
   }
 
-  Serial.print("[ESP-NOW] Controller MAC: ");
-  Serial.println(macToString(controllerMac_.data()));
+  Serial.print("[ESP-NOW] Bulky MAC: ");
+  Serial.println(macToString(localMac_.data()));
 
   return true;
 }
@@ -104,7 +104,6 @@ bool EspNowDiscovery::begin() {
 void EspNowDiscovery::startScan() {
   portENTER_CRITICAL(&stateMutex_);
   scanning_ = true;
-  lastScanBroadcastMs_ = 0;
   portEXIT_CRITICAL(&stateMutex_);
   registry_.markScanActive(true);
 }
@@ -171,15 +170,6 @@ void EspNowDiscovery::taskShim(void *param) {
 void EspNowDiscovery::taskLoop() {
   for (;;) {
     uint32_t now = millis();
-    bool shouldScan = false;
-    portENTER_CRITICAL(&stateMutex_);
-    shouldScan = scanning_;
-    portEXIT_CRITICAL(&stateMutex_);
-
-    if (shouldScan && now - lastScanBroadcastMs_ > kScanBroadcastIntervalMs) {
-      sendScanRequest();
-      lastScanBroadcastMs_ = now;
-    }
 
     if (hasTarget_ && registry_.isTelemetryTimedOut(now, 3000)) {
       registry_.notifyTelemetryTimeout();
@@ -264,37 +254,11 @@ void EspNowDiscovery::handleFeedbackPacket(const Comm::FeedbackPacket &packet) {
   registry_.touchTelemetry();
 }
 
-void EspNowDiscovery::sendScanRequest() {
-  Comm::DiscoveryPacket packet;
-  packet.header.magic = Comm::kPacketMagic;
-  packet.header.version = Comm::kProtocolVersion;
-  packet.header.type = Comm::MessageType::ScanRequest;
-  packet.mac = controllerMac_;
-  strlcpy(packet.name, "Bulky", sizeof(packet.name));
-  strlcpy(packet.platform, "Bulky", sizeof(packet.platform));
-
-  auto broadcast = broadcastAddress();
-  esp_err_t status = esp_now_send(broadcast.data(), reinterpret_cast<uint8_t *>(&packet), sizeof(packet));
-  if (status != ESP_OK) {
-    Serial.print("[ESP-NOW] Scan request failed: ");
-    Serial.println(status);
-  }
-
-  IliteIdentityMessage iliteRequest;
-  iliteRequest.type = kIliteScanRequestType;
-  memcpy(iliteRequest.mac, controllerMac_.data(), controllerMac_.size());
-  status = esp_now_send(broadcast.data(), reinterpret_cast<uint8_t *>(&iliteRequest), sizeof(iliteRequest));
-  if (status != ESP_OK) {
-    Serial.print("[ESP-NOW] Bulky scan request failed: ");
-    Serial.println(status);
-  }
-}
-
 void EspNowDiscovery::sendIliteIdentity(const std::array<uint8_t, 6> &mac, const String &droneName) {
   IliteIdentityMessage iliteIdentity;
   iliteIdentity.type = kIliteControllerIdentityType;
   strlcpy(iliteIdentity.identity, kIliteControllerIdentity, sizeof(iliteIdentity.identity));
-  memcpy(iliteIdentity.mac, controllerMac_.data(), controllerMac_.size());
+  memcpy(iliteIdentity.mac, localMac_.data(), localMac_.size());
 
   esp_err_t status = esp_now_send(mac.data(), reinterpret_cast<uint8_t *>(&iliteIdentity), sizeof(iliteIdentity));
   if (status != ESP_OK) {
@@ -306,7 +270,7 @@ void EspNowDiscovery::sendIliteIdentity(const std::array<uint8_t, 6> &mac, const
   packet.header.magic = Comm::kPacketMagic;
   packet.header.version = Comm::kProtocolVersion;
   packet.header.type = Comm::MessageType::IliteIdentity;
-  packet.mac = controllerMac_;
+  packet.mac = localMac_;
   strlcpy(packet.name, "ILITEA1", sizeof(packet.name));
   strlcpy(packet.platform, "Controller", sizeof(packet.platform));
 
@@ -314,6 +278,32 @@ void EspNowDiscovery::sendIliteIdentity(const std::array<uint8_t, 6> &mac, const
   if (status != ESP_OK) {
     Serial.print("[ESP-NOW] Failed to send ILITE identity to ");
     Serial.println(droneName);
+  }
+}
+
+void EspNowDiscovery::sendIliteDroneIdentity(const std::array<uint8_t, 6> &mac) {
+  IliteIdentityMessage droneIdentity;
+  droneIdentity.type = kIliteDroneIdentityType;
+  strlcpy(droneIdentity.identity, kBulkyIdentity, sizeof(droneIdentity.identity));
+  memcpy(droneIdentity.mac, localMac_.data(), localMac_.size());
+
+  esp_err_t status = esp_now_send(mac.data(), reinterpret_cast<uint8_t *>(&droneIdentity), sizeof(droneIdentity));
+  if (status != ESP_OK) {
+    Serial.print("[ESP-NOW] Failed to send Bulky identity to controller: ");
+    Serial.println(status);
+  }
+}
+
+void EspNowDiscovery::sendIliteDroneAck(const std::array<uint8_t, 6> &mac) {
+  IliteIdentityMessage ack;
+  ack.type = kIliteDroneAckType;
+  strlcpy(ack.identity, kBulkyIdentity, sizeof(ack.identity));
+  memcpy(ack.mac, localMac_.data(), localMac_.size());
+
+  esp_err_t status = esp_now_send(mac.data(), reinterpret_cast<uint8_t *>(&ack), sizeof(ack));
+  if (status != ESP_OK) {
+    Serial.print("[ESP-NOW] Failed to send Bulky acknowledgement: ");
+    Serial.println(status);
   }
 }
 
@@ -338,9 +328,7 @@ bool EspNowDiscovery::ensurePeer(const std::array<uint8_t, 6> &mac) {
 }
 
 bool EspNowDiscovery::handleIliteMessage(const uint8_t *mac, const uint8_t *data, int len) {
-
   if (len < static_cast<int>(sizeof(IliteIdentityMessage))) {
-
     return false;
   }
 
@@ -348,7 +336,7 @@ bool EspNowDiscovery::handleIliteMessage(const uint8_t *mac, const uint8_t *data
   if (memcmp(mac, broadcast.data(), broadcast.size()) == 0) {
     return false;
   }
-  if (memcmp(mac, controllerMac_.data(), controllerMac_.size()) == 0) {
+  if (memcmp(mac, localMac_.data(), localMac_.size()) == 0) {
     return false;
   }
 
@@ -356,74 +344,68 @@ bool EspNowDiscovery::handleIliteMessage(const uint8_t *mac, const uint8_t *data
   size_t copySize = std::min(static_cast<size_t>(len), sizeof(message));
   memcpy(&message, data, copySize);
 
-  if (message.type != kIliteDroneIdentityType && message.type != kIliteDroneAckType) {
-
-    return false;
-  }
-
-  std::array<uint8_t, 6> droneMac{};
-
-  memcpy(droneMac.data(), message.mac, droneMac.size());
-
-  bool macPopulated = false;
-  for (auto byte : droneMac) {
-    if (byte != 0) {
-      macPopulated = true;
-      break;
+  std::array<uint8_t, 6> iliteMac{};
+  bool macProvided = false;
+  for (size_t i = 0; i < iliteMac.size(); ++i) {
+    iliteMac[i] = message.mac[i];
+    if (message.mac[i] != 0) {
+      macProvided = true;
     }
   }
-  if (!macPopulated) {
-    memcpy(droneMac.data(), mac, droneMac.size());
+  if (!macProvided) {
+    memcpy(iliteMac.data(), mac, iliteMac.size());
   }
 
-
-  if (message.type == kIliteDroneIdentityType) {
-    Comm::PeerInfo peer;
-    peer.mac = droneMac;
-    peer.name = iliteIdentityToString(message.identity);
-
-    peer.platform = String("ILITE");
-    peer.lastSeenMs = millis();
-    peer.acknowledged = false;
-    registry_.upsertPeer(peer, false);
-
-    if (ensurePeer(droneMac)) {
-      sendIliteIdentity(droneMac, peer.name);
+  switch (message.type) {
+    case kIliteScanRequestType: {
+      if (ensurePeer(iliteMac)) {
+        sendIliteDroneIdentity(iliteMac);
+      }
+      return true;
     }
-    return true;
-  }
-
-
-  if (message.type == kIliteDroneAckType) {
-
-    Comm::PeerInfo peer;
-    peer.mac = droneMac;
-    peer.lastSeenMs = millis();
-    peer.acknowledged = true;
-    peer.platform = String("ILITE");
-
-    auto existing = registry_.getPeer(droneMac);
-    if (existing.has_value()) {
-      peer.name = existing->name;
-      peer.platform = existing->platform;
-    }
-
-    if (message.identity[0] != '\0') {
+    case kIliteControllerIdentityType: {
+      Comm::PeerInfo peer;
+      peer.mac = iliteMac;
       peer.name = iliteIdentityToString(message.identity);
-
-    }
-    if (peer.platform.length() == 0) {
+      if (peer.name.length() == 0) {
+        peer.name = String("ILITE");
+      }
       peer.platform = String("ILITE");
+      peer.lastSeenMs = millis();
+      peer.acknowledged = false;
+
+      bool wasAcked = false;
+      auto existing = registry_.getPeer(iliteMac);
+      if (existing.has_value()) {
+        if (existing->name.length() > 0 && peer.name.length() == 0) {
+          peer.name = existing->name;
+        }
+        if (existing->platform.length() > 0) {
+          peer.platform = existing->platform;
+        }
+        wasAcked = existing->acknowledged;
+      }
+
+      if (wasAcked) {
+        peer.acknowledged = true;
+      }
+
+      bool peerReady = ensurePeer(iliteMac);
+      if (peerReady) {
+        sendIliteDroneIdentity(iliteMac);
+        sendIliteDroneAck(iliteMac);
+        peer.acknowledged = true;
+        if (!hasTarget_) {
+          setTarget(iliteMac);
+        }
+      }
+
+      bool triggerAck = peer.acknowledged && !wasAcked;
+      registry_.upsertPeer(peer, triggerAck);
+      return true;
     }
-
-    registry_.upsertPeer(peer, true);
-
-    bool peerReady = ensurePeer(droneMac);
-    if (peerReady && !hasTarget_) {
-
-      setTarget(droneMac);
-    }
-    return true;
+    default:
+      break;
   }
 
   return false;
