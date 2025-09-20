@@ -2,6 +2,7 @@
 #include <WiFi.h>
 #include <SPI.h>
 #include <Adafruit_PWMServoDriver.h>
+#include <ArduinoOTA.h>
 
 #include <U8g2lib.h>
 
@@ -126,6 +127,8 @@ int operationMode;
 constexpr char WIFI_SSID[] = "Bulky Telemetry Port";
 constexpr char WIFI_PASSWORD[] = "";
 constexpr uint32_t COMMAND_TIMEOUT_MS = 500;
+constexpr char OTA_HOSTNAME[] = "bulky-drone";
+constexpr char OTA_PASSWORD[] = "";
 
 struct ControlState {
   byte motion;
@@ -145,6 +148,7 @@ static ControlState controlState;
 static void resetControlState();
 static void applyCommand(const Comms::ControlPacket &cmd);
 static void updateControlFromComms();
+static void initOTA();
 
 static void resetControlState()
 {
@@ -186,6 +190,45 @@ static void updateControlFromComms()
   } else {
     resetControlState();
   }
+}
+
+static void initOTA()
+{
+  ArduinoOTA.setHostname(OTA_HOSTNAME);
+  if (OTA_PASSWORD[0] != '\0') {
+    ArduinoOTA.setPassword(OTA_PASSWORD);
+  }
+
+  ArduinoOTA.onStart([]() {
+    Serial.println("OTA update starting");
+  });
+  ArduinoOTA.onEnd([]() {
+    Serial.println("OTA update finished");
+  });
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    if (total != 0) {
+      uint32_t percent = (progress * 100U) / total;
+      Serial.printf("OTA Progress: %u%%\r\n", percent);
+    }
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("OTA Error[%u]\n", static_cast<unsigned int>(error));
+    if (error == OTA_AUTH_ERROR) {
+      Serial.println("OTA Auth Failed");
+    } else if (error == OTA_BEGIN_ERROR) {
+      Serial.println("OTA Begin Failed");
+    } else if (error == OTA_CONNECT_ERROR) {
+      Serial.println("OTA Connect Failed");
+    } else if (error == OTA_RECEIVE_ERROR) {
+      Serial.println("OTA Receive Failed");
+    } else if (error == OTA_END_ERROR) {
+      Serial.println("OTA End Failed");
+    }
+  });
+
+  ArduinoOTA.begin();
+  Serial.print("OTA Ready. IP address: ");
+  Serial.println(WiFi.softAPIP());
 }
 
 void action()
@@ -266,6 +309,8 @@ void setup() {
     Serial.println("Communications initialised");
   }
 
+  initOTA();
+
 
 
   //Servo/LED PWM BootUP  =============
@@ -338,4 +383,5 @@ void loop() {
   }
 
   Comms::sendTelemetry(Comms::PACK_TELEMETRY);
+  ArduinoOTA.handle();
 }
