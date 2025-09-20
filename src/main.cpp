@@ -131,6 +131,7 @@ constexpr char OTA_HOSTNAME[] = "bulky-drone";
 constexpr char OTA_PASSWORD[] = "";
 constexpr uint16_t PAIRING_FEEDBACK_TONE_HZ = 1800;
 constexpr uint32_t PAIRING_FEEDBACK_DURATION_MS = 200;
+constexpr uint32_t PAIRING_FEEDBACK_PERIOD_MS = 1000;
 
 struct ControlState {
   byte motion;
@@ -148,6 +149,7 @@ struct ControlState {
 static ControlState controlState;
 static uint32_t lastPairingAckHandled = 0;
 static uint32_t pairingToneDeadline = 0;
+static uint32_t nextPairingToneTime = 0;
 
 static void resetControlState();
 static void applyCommand(const Comms::ControlPacket &cmd);
@@ -239,14 +241,24 @@ static void initOTA()
 
 static void updatePairingFeedback()
 {
+  uint32_t now = millis();
   uint32_t ackTime = Comms::lastPairingAckTimeMs();
   if (ackTime != 0 && ackTime != lastPairingAckHandled) {
     lastPairingAckHandled = ackTime;
-    pairingToneDeadline = millis() + PAIRING_FEEDBACK_DURATION_MS;
+    pairingToneDeadline = now + PAIRING_FEEDBACK_DURATION_MS;
+    nextPairingToneTime = now + PAIRING_FEEDBACK_PERIOD_MS;
   }
 
-  if (!Comms::paired()) {
-    pairingToneDeadline = 0;
+  if (Comms::paired()) {
+    nextPairingToneTime = 0;
+    return;
+  }
+
+  if (pairingToneDeadline == 0) {
+    if (nextPairingToneTime == 0 || static_cast<int32_t>(now - nextPairingToneTime) >= 0) {
+      pairingToneDeadline = now + PAIRING_FEEDBACK_DURATION_MS;
+      nextPairingToneTime = now + PAIRING_FEEDBACK_PERIOD_MS;
+    }
   }
 }
 
