@@ -210,6 +210,8 @@ namespace {
     }
 
     void onDataRecvInternal(const uint8_t *mac, const uint8_t *incomingData, int len) {
+        ledcWriteTone(2,380);
+        Serial.println("Recieved something");
         if (mac == nullptr || incomingData == nullptr) {
             return;
         }
@@ -272,13 +274,9 @@ namespace {
         (void)tcpPort;
 
         WiFi.mode(WIFI_AP_STA);
-        WiFi.setTxPower(WIFI_POWER_8_5dBm);
+        WiFi.setTxPower(WIFI_POWER_19_5dBm);
         WiFi.setSleep(false);
-        if (password && std::strlen(password) >= 8) {
-            WiFi.softAP(ssid, password);
-        } else {
-            WiFi.softAP(ssid);
-        }
+        WiFi.softAP(ssid, password);
 
         if (g_espNowInitialised) {
             esp_now_deinit();
@@ -299,7 +297,7 @@ namespace {
             esp_now_add_peer(&peerInfo);
         }
 
-        esp_now_register_recv_cb(recvCallback ? recvCallback : onDataRecvInternal);
+        esp_now_register_recv_cb(onDataRecvInternal);
 
         g_paired = false;
         memset(g_controllerMac, 0, sizeof(g_controllerMac));

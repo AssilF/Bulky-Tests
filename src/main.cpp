@@ -366,7 +366,7 @@ void setup() {
   timerAlarmEnable(SpeedRetrieval_Handle);
 
   resetControlState();
-  if (!Comms::init(WIFI_SSID, WIFI_PASSWORD, 0)) {
+  if (!Comms::init(WIFI_SSID, WIFI_PASSWORD, 8000)) {
     Serial.println("Failed to initialise communications");
   } else {
     Serial.println("Communications initialised");
