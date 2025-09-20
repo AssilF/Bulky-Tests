@@ -33,6 +33,7 @@ enum PairingType : uint8_t {
     DRONE_IDENTITY = 0x02,
     ILITE_IDENTITY = 0x03,
     DRONE_ACK = 0x04,
+    ELITE_IDENTITY = 0x05,
 };
 
 struct IdentityMessage {

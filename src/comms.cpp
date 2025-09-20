@@ -5,6 +5,7 @@
 #include "sensors.h"
 
 #include <cstring>
+#include <cctype>
 
 extern int operationMode;
 
@@ -29,6 +30,74 @@ namespace {
     uint8_t g_controllerMac[6] = {0};
     uint32_t g_lastCommandTime = 0;
 
+    bool macValid(const uint8_t *mac) {
+        if (mac == nullptr) {
+            return false;
+        }
+        for (size_t i = 0; i < 6; ++i) {
+            if (mac[i] != 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool identityContains(const IdentityMessage &msg, const char *needle) {
+        if (needle == nullptr || needle[0] == '\0') {
+            return false;
+        }
+        const size_t maxLen = sizeof(msg.identity);
+        const size_t needleLen = std::strlen(needle);
+        if (needleLen == 0 || needleLen > maxLen) {
+            return false;
+        }
+
+        for (size_t start = 0; start + needleLen <= maxLen; ++start) {
+            if (msg.identity[start] == '\0') {
+                break;
+            }
+
+            bool match = true;
+            for (size_t i = 0; i < needleLen; ++i) {
+                size_t idx = start + i;
+                if (idx >= maxLen) {
+                    match = false;
+                    break;
+                }
+                char actual = msg.identity[idx];
+                if (actual == '\0') {
+                    match = false;
+                    break;
+                }
+                char expected = needle[i];
+                actual = static_cast<char>(std::toupper(static_cast<unsigned char>(actual)));
+                expected = static_cast<char>(std::toupper(static_cast<unsigned char>(expected)));
+                if (actual != expected) {
+                    match = false;
+                    break;
+                }
+            }
+
+            if (match) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool isEliteControllerIdentity(const IdentityMessage &msg) {
+        if (msg.type == ILITE_IDENTITY || msg.type == ELITE_IDENTITY) {
+            return true;
+        }
+        if (identityContains(msg, "ILITE")) {
+            return true;
+        }
+        if (identityContains(msg, "ELITE")) {
+            return true;
+        }
+        return false;
+    }
+
     void respondWithIdentity(const uint8_t *mac) {
         if (mac == nullptr) {
             return;
@@ -46,11 +115,13 @@ namespace {
         }
         IdentityMessage ack{};
         ack.type = DRONE_ACK;
+        strncpy(ack.identity, "Bulky", sizeof(ack.identity) - 1);
+        WiFi.macAddress(ack.mac);
         esp_now_send(mac, reinterpret_cast<const uint8_t *>(&ack), sizeof(ack));
     }
 
     void ensurePeerRegistered(const uint8_t *mac) {
-        if (mac == nullptr) {
+        if (!macValid(mac)) {
             return;
         }
         if (esp_now_is_peer_exist(mac)) {
@@ -65,12 +136,7 @@ namespace {
     }
 
     bool controllerMacValid() {
-        for (uint8_t byte : g_controllerMac) {
-            if (byte != 0) {
-                return true;
-            }
-        }
-        return false;
+        return macValid(g_controllerMac);
     }
 
     void handleIliteCommand(const uint8_t *mac, const IliteCommand *cmd) {
@@ -79,7 +145,7 @@ namespace {
         }
         ensurePeerRegistered(mac);
 
-        if (!controllerMacValid()) {
+        if (!controllerMacValid() || memcmp(g_controllerMac, mac, 6) != 0) {
             memcpy(g_controllerMac, mac, 6);
         }
 
@@ -114,11 +180,25 @@ namespace {
                 respondWithIdentity(mac);
                 return;
             }
-            if (msg->type == ILITE_IDENTITY) {
-                ensurePeerRegistered(mac);
-                memcpy(g_controllerMac, mac, 6);
-                g_paired = true;
-                acknowledgeController(mac);
+            if (isEliteControllerIdentity(*msg)) {
+                const uint8_t *primaryMac = macValid(msg->mac) ? msg->mac : nullptr;
+                const uint8_t *fallbackMac = macValid(mac) ? mac : nullptr;
+                const uint8_t *targetMac = primaryMac ? primaryMac : fallbackMac;
+
+                if (primaryMac) {
+                    ensurePeerRegistered(primaryMac);
+                }
+                if (fallbackMac) {
+                    ensurePeerRegistered(fallbackMac);
+                }
+                if (targetMac) {
+                    if (!controllerMacValid() || memcmp(g_controllerMac, targetMac, 6) != 0) {
+                        memcpy(g_controllerMac, targetMac, 6);
+                    }
+                    g_paired = true;
+                    g_lastCommandTime = millis();
+                    acknowledgeController(targetMac);
+                }
                 return;
             }
         }
@@ -128,7 +208,7 @@ namespace {
             g_lastCommand = *cmd;
             g_lastCommandTime = millis();
             g_paired = true;
-            if (!controllerMacValid()) {
+            if (macValid(mac) && (!controllerMacValid() || memcmp(g_controllerMac, mac, 6) != 0)) {
                 memcpy(g_controllerMac, mac, 6);
             }
             ensurePeerRegistered(mac);
