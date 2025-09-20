@@ -2,8 +2,6 @@
 
 #include <Arduino.h>
 
-#include "comms.h"
-
 struct ControlState {
   byte motion;
   byte speed;
@@ -20,10 +18,6 @@ struct ControlState {
 extern ControlState controlState;
 
 void resetControlState();
-void applyCommand(const Comms::ControlPacket &cmd);
 void updateControlFromComms();
-void initOTA();
-void updatePairingFeedback();
-void updateIliteBroadcastFeedback();
 void updateBuzzerOutput();
 void action();

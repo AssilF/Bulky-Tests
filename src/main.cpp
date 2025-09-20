@@ -1,15 +1,12 @@
 #include <Arduino.h>
-#include <WiFi.h>
 #include <SPI.h>
 #include <Adafruit_PWMServoDriver.h>
-#include <ArduinoOTA.h>
 
 #include <U8g2lib.h>
 
 #include "sensors.h"
 #include "motion.h"
 #include "line.h"
-#include "comms.h"
 #include "main.h"
 
 U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0);
@@ -125,30 +122,9 @@ int operationMode;
 #define calibrationMode 6
 #define visionDrivenMode 7
 
-constexpr char WIFI_SSID[] = "Bulky Telemetry Port";
-constexpr char WIFI_PASSWORD[] = "ASCE321#";
-constexpr uint32_t COMMAND_TIMEOUT_MS = 500;
-constexpr char OTA_HOSTNAME[] = "bulky-drone";
-constexpr char OTA_PASSWORD[] = "";
-constexpr uint16_t PAIRING_FEEDBACK_TONE_HZ = 1800;
-constexpr uint32_t PAIRING_FEEDBACK_DURATION_MS = 200;
-constexpr uint32_t PAIRING_FEEDBACK_PERIOD_MS = 1000;
-constexpr uint16_t ILITE_BROADCAST_TONE_HZ = 2400;
-constexpr uint32_t ILITE_BROADCAST_DURATION_MS = 300;
-
 ControlState controlState;
-static uint32_t lastPairingAckHandled = 0;
-static uint32_t pairingToneDeadline = 0;
-static uint32_t nextPairingToneTime = 0;
-static uint32_t lastIliteBroadcastHandled = 0;
-static uint32_t iliteToneDeadline = 0;
-
 void resetControlState();
-void applyCommand(const Comms::ControlPacket &cmd);
 void updateControlFromComms();
-void initOTA();
-void updatePairingFeedback();
-void updateIliteBroadcastFeedback();
 void updateBuzzerOutput();
 
 void resetControlState()
@@ -165,133 +141,18 @@ void resetControlState()
   controlState.cranePitch = 0;
 }
 
-void applyCommand(const Comms::ControlPacket &cmd)
-{
-  controlState.motion = cmd.MotionState;
-  controlState.speed = cmd.Speed;
-  controlState.pump = cmd.bool1[0];
-  controlState.flash = cmd.bool1[1];
-  controlState.buzzer = cmd.bool1[2];
-  controlState.cameraMode = cmd.bool1[3];
-  controlState.cameraYaw = static_cast<uint8_t>(constrain(static_cast<int>(cmd.yaw), 0, 180));
-  controlState.cameraPitch = static_cast<uint8_t>(constrain(static_cast<int>(cmd.pitch), 0, 180));
-  controlState.craneYaw = controlState.cameraYaw;
-  controlState.cranePitch = controlState.cameraPitch;
-}
-
 void updateControlFromComms()
 {
-  Comms::ControlPacket command{};
-  bool linked = Comms::receiveCommand(command);
-  uint32_t lastCommand = Comms::lastCommandTimeMs();
-  uint32_t age = lastCommand ? (millis() - lastCommand) : (COMMAND_TIMEOUT_MS + 1);
-
-  if (linked && lastCommand != 0 && age <= COMMAND_TIMEOUT_MS) {
-    applyCommand(command);
-  } else {
-    resetControlState();
-  }
-}
-
-void initOTA()
-{
-  ArduinoOTA.setHostname(OTA_HOSTNAME);
-  if (OTA_PASSWORD[0] != '\0') {
-    ArduinoOTA.setPassword(OTA_PASSWORD);
-  }
-
-  ArduinoOTA.onStart([]() {
-    Serial.println("OTA update starting");
-  });
-  ArduinoOTA.onEnd([]() {
-    Serial.println("OTA update finished");
-  });
-  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-    if (total != 0) {
-      uint32_t percent = (progress * 100U) / total;
-      Serial.printf("OTA Progress: %u%%\r\n", percent);
-    }
-  });
-  ArduinoOTA.onError([](ota_error_t error) {
-    Serial.printf("OTA Error[%u]\n", static_cast<unsigned int>(error));
-    if (error == OTA_AUTH_ERROR) {
-      Serial.println("OTA Auth Failed");
-    } else if (error == OTA_BEGIN_ERROR) {
-      Serial.println("OTA Begin Failed");
-    } else if (error == OTA_CONNECT_ERROR) {
-      Serial.println("OTA Connect Failed");
-    } else if (error == OTA_RECEIVE_ERROR) {
-      Serial.println("OTA Receive Failed");
-    } else if (error == OTA_END_ERROR) {
-      Serial.println("OTA End Failed");
-    }
-  });
-
-  ArduinoOTA.begin();
-  Serial.print("OTA Ready. IP address: ");
-  Serial.println(WiFi.softAPIP());
-}
-
-void updatePairingFeedback()
-{
-  uint32_t now = millis();
-  uint32_t ackTime = Comms::lastPairingAckTimeMs();
-  if (ackTime != 0 && ackTime != lastPairingAckHandled) {
-    lastPairingAckHandled = ackTime;
-    pairingToneDeadline = now + PAIRING_FEEDBACK_DURATION_MS;
-    nextPairingToneTime = now + PAIRING_FEEDBACK_PERIOD_MS;
-  }
-
-  if (Comms::paired()) {
-    nextPairingToneTime = 0;
-    return;
-  }
-
-  if (pairingToneDeadline == 0) {
-    if (nextPairingToneTime == 0 || static_cast<int32_t>(now - nextPairingToneTime) >= 0) {
-      pairingToneDeadline = now + PAIRING_FEEDBACK_DURATION_MS;
-      nextPairingToneTime = now + PAIRING_FEEDBACK_PERIOD_MS;
-    }
-  }
-}
-
-void updateIliteBroadcastFeedback()
-{
-  uint32_t eventTime = Comms::lastIliteBroadcastTimeMs();
-  if (eventTime != 0 && eventTime != lastIliteBroadcastHandled) {
-    lastIliteBroadcastHandled = eventTime;
-    iliteToneDeadline = millis() + ILITE_BROADCAST_DURATION_MS;
-  }
+  // Communications system removed; no remote updates to apply.
 }
 
 void updateBuzzerOutput()
 {
   if (controlState.buzzer) {
     sound(1300);
-    pairingToneDeadline = 0;
-    iliteToneDeadline = 0;
-    return;
+  } else {
+    sound(0);
   }
-
-  if (iliteToneDeadline != 0) {
-    uint32_t now = millis();
-    if (static_cast<int32_t>(iliteToneDeadline - now) > 0) {
-      sound(ILITE_BROADCAST_TONE_HZ);
-      return;
-    }
-    iliteToneDeadline = 0;
-  }
-
-  if (pairingToneDeadline != 0) {
-    uint32_t now = millis();
-    if (static_cast<int32_t>(pairingToneDeadline - now) > 0) {
-      sound(PAIRING_FEEDBACK_TONE_HZ);
-      return;
-    }
-    pairingToneDeadline = 0;
-  }
-
-  sound(0);
 }
 
 void action()
@@ -351,7 +212,6 @@ void setup() {
   Serial.begin(115200);
   setCpuFrequencyMhz(240);
   Serial.print("About To commence @ Frequency of : ");
-  Serial.println(WiFi.macAddress());
   Serial.println(getCpuFrequencyMhz());
   delay(100);
 
@@ -366,15 +226,8 @@ void setup() {
   timerAlarmEnable(SpeedRetrieval_Handle);
 
   resetControlState();
-  if (!Comms::init(WIFI_SSID, WIFI_PASSWORD, 8000)) {
-    Serial.println("Failed to initialise communications");
-  } else {
-    delay(10);
-    Serial.println("Communications initialised");
-  }
-
-  initOTA();
-    delay(10);
+  Serial.println("Wireless communications disabled");
+  delay(10);
 
 
   //Servo/LED PWM BootUP  =============
@@ -431,11 +284,9 @@ void loop() {
   lineMode=0;
   processLine();
   updateControlFromComms();
-  updatePairingFeedback();
-  updateIliteBroadcastFeedback();
   projectMotion(controlState.motion, controlState.speed);
-  if(controlState.pump){pump(4096);} else{pump(0);} 
-  if(controlState.flash){flash(4096);} else{flash(0);} 
+  if(controlState.pump){pump(4096);} else{pump(0);}
+  if(controlState.flash){flash(4096);} else{flash(0);}
   updateBuzzerOutput();
   if(controlState.cameraMode)
   {
@@ -448,6 +299,4 @@ void loop() {
     craneDeploy(controlState.cranePitch);
   }
 
-  Comms::sendTelemetry(Comms::PACK_TELEMETRY);
-  ArduinoOTA.handle();
 }
