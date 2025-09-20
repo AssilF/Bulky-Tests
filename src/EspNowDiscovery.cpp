@@ -337,7 +337,9 @@ bool EspNowDiscovery::ensurePeer(const std::array<uint8_t, 6> &mac) {
 }
 
 bool EspNowDiscovery::handleIliteMessage(const uint8_t *mac, const uint8_t *data, int len) {
+
   if (len < static_cast<int>(sizeof(IliteIdentityMessage))) {
+
     return false;
   }
 
@@ -354,11 +356,14 @@ bool EspNowDiscovery::handleIliteMessage(const uint8_t *mac, const uint8_t *data
   memcpy(&message, data, copySize);
 
   if (message.type != kIliteDroneIdentityType && message.type != kIliteDroneAckType) {
+
     return false;
   }
 
   std::array<uint8_t, 6> droneMac{};
+
   memcpy(droneMac.data(), message.mac, droneMac.size());
+
   bool macPopulated = false;
   for (auto byte : droneMac) {
     if (byte != 0) {
@@ -370,10 +375,12 @@ bool EspNowDiscovery::handleIliteMessage(const uint8_t *mac, const uint8_t *data
     memcpy(droneMac.data(), mac, droneMac.size());
   }
 
+
   if (message.type == kIliteDroneIdentityType) {
     Comm::PeerInfo peer;
     peer.mac = droneMac;
     peer.name = iliteIdentityToString(message.identity);
+
     peer.platform = String("ILITE");
     peer.lastSeenMs = millis();
     peer.acknowledged = false;
@@ -385,7 +392,9 @@ bool EspNowDiscovery::handleIliteMessage(const uint8_t *mac, const uint8_t *data
     return true;
   }
 
+
   if (message.type == kIliteDroneAckType) {
+
     Comm::PeerInfo peer;
     peer.mac = droneMac;
     peer.lastSeenMs = millis();
@@ -397,16 +406,20 @@ bool EspNowDiscovery::handleIliteMessage(const uint8_t *mac, const uint8_t *data
       peer.name = existing->name;
       peer.platform = existing->platform;
     }
+
     if (message.identity[0] != '\0') {
       peer.name = iliteIdentityToString(message.identity);
+
     }
     if (peer.platform.length() == 0) {
       peer.platform = String("ILITE");
     }
 
     registry_.upsertPeer(peer, true);
+
     bool peerReady = ensurePeer(droneMac);
     if (peerReady && !hasTarget_) {
+
       setTarget(droneMac);
     }
     return true;
