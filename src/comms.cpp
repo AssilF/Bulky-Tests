@@ -336,6 +336,7 @@ namespace {
         }
 
         g_externalRecvCallback = recvCallback;
+
         esp_err_t registerResult = esp_now_register_recv_cb(&onEspNowDataRecv);
         if (registerResult != ESP_OK) {
             Serial.printf("Failed to register ESP-NOW recv callback: %s (%d)\n", esp_err_to_name(registerResult), static_cast<int>(registerResult));
@@ -343,6 +344,7 @@ namespace {
             g_espNowInitialised = false;
             return false;
         }
+
         delay(10);
         g_paired = false;
         memset(g_controllerMac, 0, sizeof(g_controllerMac));
