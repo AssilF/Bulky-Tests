@@ -57,11 +57,11 @@ bool EspNowDiscovery::begin() {
   g_instance = this;
 
   WiFi.mode(WIFI_AP_STA);
-  WiFi.setHostname("ILITE-Controller");
-  if (!WiFi.softAP("ILITE_CTRL", "ilitepass")) {
+  WiFi.setHostname("Bulky");
+  if (!WiFi.softAP("Bulky PORT", "ASCE321#")) {
     Serial.println("[ESP-NOW] Failed to start SoftAP");
   }
-  WiFi.softAPsetHostname("ILITE-Controller");
+  WiFi.softAPsetHostname("Bulky");
 
   WiFi.macAddress(controllerMac_.data());
   bool macValid = false;
@@ -269,8 +269,8 @@ void EspNowDiscovery::sendScanRequest() {
   packet.header.version = Comm::kProtocolVersion;
   packet.header.type = Comm::MessageType::ScanRequest;
   packet.mac = controllerMac_;
-  strlcpy(packet.name, "ILITE_CTRL", sizeof(packet.name));
-  strlcpy(packet.platform, "Controller", sizeof(packet.platform));
+  strlcpy(packet.name, "Bulky", sizeof(packet.name));
+  strlcpy(packet.platform, "Bulky", sizeof(packet.platform));
 
   auto broadcast = broadcastAddress();
   esp_err_t status = esp_now_send(broadcast.data(), reinterpret_cast<uint8_t *>(&packet), sizeof(packet));
@@ -284,7 +284,7 @@ void EspNowDiscovery::sendScanRequest() {
   memcpy(iliteRequest.mac, controllerMac_.data(), controllerMac_.size());
   status = esp_now_send(broadcast.data(), reinterpret_cast<uint8_t *>(&iliteRequest), sizeof(iliteRequest));
   if (status != ESP_OK) {
-    Serial.print("[ESP-NOW] ILITE scan request failed: ");
+    Serial.print("[ESP-NOW] Bulky scan request failed: ");
     Serial.println(status);
   }
 }
@@ -297,7 +297,7 @@ void EspNowDiscovery::sendIliteIdentity(const std::array<uint8_t, 6> &mac, const
 
   esp_err_t status = esp_now_send(mac.data(), reinterpret_cast<uint8_t *>(&iliteIdentity), sizeof(iliteIdentity));
   if (status != ESP_OK) {
-    Serial.print("[ESP-NOW] Failed to send ILITE identity to ");
+    Serial.print("[ESP-NOW] Failed to send Bulky identity to ");
     Serial.println(droneName);
   }
 
