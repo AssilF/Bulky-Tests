@@ -11,6 +11,16 @@ extern int operationMode;
 namespace Comms {
 namespace {
     static_assert(sizeof(ControlPacket) == 8, "ControlPacket must remain 8 bytes");
+    static_assert(sizeof(IdentityMessage) == 23, "IdentityMessage must remain 23 bytes");
+
+    struct IliteCommand {
+        uint8_t replyIndex;
+        int8_t speed;
+        uint8_t motionState;
+        uint8_t buttonStates[3];
+    } __attribute__((packed));
+
+    static_assert(sizeof(IliteCommand) == 6, "IliteCommand must remain 6 bytes");
 
     constexpr float CM_PER_SECOND_CONVERSION = 10.362f;
 
@@ -33,6 +43,18 @@ namespace {
         esp_now_send(mac, reinterpret_cast<const uint8_t *>(&ack), sizeof(ack));
     }
 
+    void ensurePeerRegistered(const uint8_t *mac) {
+        if (esp_now_is_peer_exist(mac)) {
+            return;
+        }
+
+        esp_now_peer_info_t peerInfo{};
+        memcpy(peerInfo.peer_addr, mac, 6);
+        peerInfo.channel = 0;
+        peerInfo.encrypt = false;
+        esp_now_add_peer(&peerInfo);
+    }
+
     bool controllerMacValid() {
         for (uint8_t byte : g_controllerMac) {
             if (byte != 0) {
@@ -40,6 +62,34 @@ namespace {
             }
         }
         return false;
+    }
+
+    void handleIliteCommand(const uint8_t *mac, const IliteCommand *cmd) {
+        ensurePeerRegistered(mac);
+
+        if (!controllerMacValid()) {
+            memcpy(g_controllerMac, mac, 6);
+        }
+
+        ControlPacket converted = g_lastCommand;
+
+        int speed = static_cast<int>(cmd->speed);
+        if (speed < 0) {
+            speed = -speed;
+        }
+        if (speed > 100) {
+            speed = 100;
+        }
+
+        converted.Speed = static_cast<uint8_t>(speed);
+        converted.MotionState = cmd->motionState;
+        converted.bool1[0] = cmd->buttonStates[0] != 0;
+        converted.bool1[1] = cmd->buttonStates[1] != 0;
+        converted.bool1[2] = cmd->buttonStates[2] != 0;
+
+        g_lastCommand = converted;
+        g_lastCommandTime = millis();
+        g_paired = true;
     }
 
     void onDataRecvInternal(const uint8_t *mac, const uint8_t *incomingData, int len) {
@@ -50,13 +100,7 @@ namespace {
                 return;
             }
             if (msg->type == ILITE_IDENTITY) {
-                if (!esp_now_is_peer_exist(mac)) {
-                    esp_now_peer_info_t peerInfo{};
-                    memcpy(peerInfo.peer_addr, mac, 6);
-                    peerInfo.channel = 0;
-                    peerInfo.encrypt = false;
-                    esp_now_add_peer(&peerInfo);
-                }
+                ensurePeerRegistered(mac);
                 memcpy(g_controllerMac, mac, 6);
                 g_paired = true;
                 acknowledgeController(mac);
@@ -68,6 +112,18 @@ namespace {
             const ControlPacket *cmd = reinterpret_cast<const ControlPacket *>(incomingData);
             g_lastCommand = *cmd;
             g_lastCommandTime = millis();
+            g_paired = true;
+            if (!controllerMacValid()) {
+                memcpy(g_controllerMac, mac, 6);
+            }
+            ensurePeerRegistered(mac);
+            return;
+        }
+
+        if (len == static_cast<int>(sizeof(IliteCommand))) {
+            const IliteCommand *cmd = reinterpret_cast<const IliteCommand *>(incomingData);
+            handleIliteCommand(mac, cmd);
+            return;
         }
     }
 
