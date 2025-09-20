@@ -4,8 +4,14 @@
 #include "motion.h"
 #include "sensors.h"
 
-#include <cstring>
 #include <cctype>
+#include <cstring>
+
+#if defined(ESP_PLATFORM)
+#include <esp_idf_version.h>
+#endif
+
+#include <esp_err.h>
 
 extern int operationMode;
 
@@ -211,7 +217,6 @@ namespace {
     }
 
     void onDataRecvInternal(const uint8_t *mac, const uint8_t *incomingData, int len) {
-
         if (mac == nullptr || incomingData == nullptr) {
             return;
         }
@@ -274,6 +279,23 @@ namespace {
         }
     }
 
+#if defined(ESP_IDF_VERSION) && defined(ESP_IDF_VERSION_VAL)
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(4, 3, 0)
+    void IRAM_ATTR onEspNowDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomingData, int len) {
+        const uint8_t *mac = info ? info->src_addr : nullptr;
+        onDataRecvInternal(mac, incomingData, len);
+    }
+#else
+    void IRAM_ATTR onEspNowDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
+        onDataRecvInternal(mac, incomingData, len);
+    }
+#endif
+#else
+    void IRAM_ATTR onEspNowDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
+        onDataRecvInternal(mac, incomingData, len);
+    }
+#endif
+
     bool initInternal(const char *ssid, const char *password, int tcpPort, esp_now_recv_cb_t recvCallback) {
         (void)tcpPort;
         Serial.println("Initialising Comms");
@@ -299,8 +321,8 @@ namespace {
         }
 
         g_externalRecvCallback = recvCallback;
-        esp_now_register_recv_cb(recvCallback? recvCallback : onDataRecvInternal);
-
+        esp_now_register_recv_cb(&onDataRecvInternal);
+        delay(10);
         g_paired = false;
         memset(g_controllerMac, 0, sizeof(g_controllerMac));
         g_lastCommand = ControlPacket{};
