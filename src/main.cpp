@@ -1,6 +1,5 @@
 #include <Arduino.h>
 #include <WiFi.h>
-#include <esp_now.h>
 #include <SPI.h>
 #include <Adafruit_PWMServoDriver.h>
 
@@ -124,11 +123,100 @@ int operationMode;
 #define calibrationMode 6
 #define visionDrivenMode 7
 
+constexpr char WIFI_SSID[] = "Bulky Telemetry Port";
+constexpr char WIFI_PASSWORD[] = "";
+constexpr uint32_t COMMAND_TIMEOUT_MS = 500;
+constexpr float SPEED_TO_CM_PER_SEC = 10.362f;
+
+struct ControlState {
+  byte motion;
+  byte speed;
+  bool pump;
+  bool flash;
+  bool buzzer;
+  bool cameraMode;
+  uint8_t cameraYaw;
+  uint8_t cameraPitch;
+  uint8_t craneYaw;
+  uint8_t cranePitch;
+};
+
+static ControlState controlState;
+
+static void resetControlState();
+static void applyCommand(const Comms::ThrustCommand &cmd);
+static void updateControlFromComms();
+
+static void resetControlState()
+{
+  controlState.motion = STOP;
+  controlState.speed = 0;
+  controlState.pump = false;
+  controlState.flash = false;
+  controlState.buzzer = false;
+  controlState.cameraMode = true;
+  controlState.cameraYaw = 90;
+  controlState.cameraPitch = 90;
+  controlState.craneYaw = 90;
+  controlState.cranePitch = 0;
+}
+
+static void applyCommand(const Comms::ThrustCommand &cmd)
+{
+  int16_t throttle = static_cast<int16_t>(cmd.throttle) - 1000;
+  int16_t absThrottle = abs(throttle);
+  long mappedSpeed = map(static_cast<long>(absThrottle), 0L, 1000L, 0L, 100L);
+  uint8_t driveSpeed = static_cast<uint8_t>(constrain(mappedSpeed, 0L, 100L));
+
+  byte motion = STOP;
+  if (throttle > 50) {
+    motion = MOVE_FRONT;
+  } else if (throttle < -50) {
+    motion = MOVE_BACK;
+  }
+
+  int16_t yaw = cmd.yawAngle;
+  if (yaw > 20) {
+    motion = ROTATE_RIGHT;
+  } else if (yaw < -20) {
+    motion = ROTATE_LEFT;
+  }
+
+  if (motion == STOP) {
+    driveSpeed = 0;
+  }
+
+  controlState.motion = motion;
+  controlState.speed = driveSpeed;
+  controlState.pump = cmd.arm_motors;
+  controlState.flash = cmd.rollAngle > 30;
+  controlState.buzzer = cmd.rollAngle < -30;
+  controlState.cameraYaw = static_cast<uint8_t>(constrain(map(static_cast<long>(cmd.rollAngle), -90L, 90L, 0L, 180L), 0L, 180L));
+  controlState.cameraPitch = static_cast<uint8_t>(constrain(map(static_cast<long>(cmd.pitchAngle), -90L, 90L, 0L, 180L), 0L, 180L));
+  controlState.craneYaw = controlState.cameraYaw;
+  controlState.cranePitch = controlState.cameraPitch;
+  controlState.cameraMode = cmd.pitchAngle >= 0;
+}
+
+static void updateControlFromComms()
+{
+  Comms::ThrustCommand command{};
+  bool linked = Comms::receiveCommand(command);
+  uint32_t lastCommand = Comms::lastCommandTimeMs();
+  uint32_t age = lastCommand ? (millis() - lastCommand) : (COMMAND_TIMEOUT_MS + 1);
+
+  if (linked && command.magic == Comms::PACKET_MAGIC && age <= COMMAND_TIMEOUT_MS) {
+    applyCommand(command);
+  } else {
+    resetControlState();
+  }
+}
+
 void action()
 {
   if(operationMode==radioControlledMode)
   {
-    
+
   }
 }
 
@@ -195,26 +283,12 @@ void setup() {
   timerAlarmWrite(SpeedRetrieval_Handle, 100000, true); //let's take a speed sample each 76ms maybe ? seems like a good compromise instinctively or something.
   timerAlarmEnable(SpeedRetrieval_Handle);
 
-
-
-  //Init Wifi & ESPNOW ===============
-  WiFi.mode(WIFI_STA); //just in case this is what helped with the uncought load prohibition exception.
-  debug("\nwifi loaded\n");
-  if (esp_now_init() != ESP_OK) {
-  debug("ESPnow said no :(")
-  }debug("\n\nespnow initialized\n")
-
-  esp_now_register_send_cb(OnDataSent); debug("sending callback set \n \n")//Sent Callback Function associated
-  memcpy(bot.peer_addr, targetAddress, 6); //putting the bot ID card into memory ;)
-  bot.channel = 0;     
-  bot.encrypt = false; //data won't be encrypted so we don't waste too much cpu juice
-
-  if (esp_now_add_peer(&bot) != ESP_OK){
-  debug("What the bot doin ?");
-  }debug("peer added \n")
-
-  esp_now_register_recv_cb(OnDataRecv); debug("reception callback set \n \n")//Recv Callback Function associated 
-  //===================================
+  resetControlState();
+  if (!Comms::init(WIFI_SSID, WIFI_PASSWORD, 0)) {
+    Serial.println("Failed to initialise communications");
+  } else {
+    Serial.println("Communications initialised");
+  }
 
 
 
@@ -265,29 +339,50 @@ double lastLineError;
 double currentLineError;
 
 void loop() {
-  // if(receive_Status){receive_Status=0;setMotion(reception.vector[0],reception.vector[1]);}
   sense(); //nothing shall be freezing, instead, work with instances and ticks and polling.
   getDistances();
   processBattery();
   processIRImissions();
   lineMode=0;
   processLine();
-  projectMotion(reception.MotionState,reception.Speed);
-  if(reception.bool1[0]){pump(4096);} else{pump(0);}
-  if(reception.bool1[1]){flash(4096);} else{flash(0);}
-  if(reception.bool1[2]){sound(1300);} else{sound(0);}
-  if(reception.bool1[3])
+  updateControlFromComms();
+  projectMotion(controlState.motion, controlState.speed);
+  if(controlState.pump){pump(4096);} else{pump(0);}
+  if(controlState.flash){flash(4096);} else{flash(0);}
+  if(controlState.buzzer){sound(1300);} else{sound(0);}
+  if(controlState.cameraMode)
   {
-    camYaw(map(reception.yaw,0,180,0,90));
-    camPitch(map(reception.pitch,0,180,0,90));
+    camYaw(controlState.cameraYaw);
+    camPitch(controlState.cameraPitch);
   }
   else
   {
-    craneOffset(reception.yaw);
-    craneDeploy(reception.pitch);
+    craneOffset(controlState.craneYaw);
+    craneDeploy(controlState.cranePitch);
   }
 
-  // debug("\reception Speed: ")debug(reception.Speed);
-  // debug("\reception MotionState: ")debug(String(reception.MotionState,BIN));
-  sendData(PACK_TELEMETRY);
+  Comms::TelemetryPacket packet{};
+  packet.magic = Comms::PACKET_MAGIC;
+  packet.pitch = static_cast<float>(linePosition);
+  packet.roll = static_cast<float>(front_distance);
+  packet.yaw = static_cast<float>(bot_distance);
+  packet.pitchCorrection = static_cast<float>(IRBias);
+  packet.rollCorrection = static_cast<float>(batteryLevel);
+  packet.yawCorrection = static_cast<float>(operationMode);
+  packet.throttle = static_cast<uint16_t>(controlState.speed);
+  packet.pitchAngle = static_cast<int8_t>(constrain(map(static_cast<long>(controlState.cameraPitch), 0L, 180L, -90L, 90L), -90L, 90L));
+  packet.rollAngle = static_cast<int8_t>(constrain(map(static_cast<long>(controlState.cameraYaw), 0L, 180L, -90L, 90L), -90L, 90L));
+  int8_t yawState = 0;
+  if(controlState.motion == ROTATE_RIGHT){
+    yawState = 45;
+  }else if(controlState.motion == ROTATE_LEFT){
+    yawState = -45;
+  }else if(controlState.motion == MOVE_BACK){
+    yawState = 90;
+  }
+  packet.yawAngle = yawState;
+  packet.verticalAcc = static_cast<float>(average_count * SPEED_TO_CM_PER_SEC);
+  uint32_t lastCommand = Comms::lastCommandTimeMs();
+  packet.commandAge = lastCommand ? (millis() - lastCommand) : 0;
+  Comms::sendTelemetry(packet);
 }

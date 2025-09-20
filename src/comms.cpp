@@ -1,97 +1,129 @@
 #include "comms.h"
-#include "sensors.h"
-#include "line.h"
-#include "motion.h"
 
-#define Cm_per_Second_Conversion 10.362
+#include <cstring>
 
-uint8_t targetAddress[6] = {0x78, 0x21, 0x84, 0x7E, 0x68, 0x1C};
-esp_now_peer_info bot;
+namespace Comms {
+namespace {
+    bool g_paired = false;
+    ThrustCommand g_lastCommand{PACKET_MAGIC, 1000, 0, 0, 0, false};
+    uint8_t g_controllerMac[6] = {0};
+    uint32_t g_lastCommandTime = 0;
 
-bool sent_Status;
-bool receive_Status;
+    void respondWithIdentity(const uint8_t *mac) {
+        IdentityMessage resp{};
+        resp.type = DRONE_IDENTITY;
+        strncpy(resp.identity, "Bulky", sizeof(resp.identity) - 1);
+        WiFi.macAddress(resp.mac);
+        esp_now_send(mac, reinterpret_cast<const uint8_t *>(&resp), sizeof(resp));
+    }
 
-receptionDataPacket reception;
-emissionDataPacket emission;
+    void acknowledgeController(const uint8_t *mac) {
+        IdentityMessage ack{};
+        ack.type = DRONE_ACK;
+        esp_now_send(mac, reinterpret_cast<const uint8_t *>(&ack), sizeof(ack));
+    }
 
-byte resendIndex;
+    void onDataRecvInternal(const uint8_t *mac, const uint8_t *incomingData, int len) {
+        if (len == static_cast<int>(sizeof(IdentityMessage))) {
+            const IdentityMessage *msg = reinterpret_cast<const IdentityMessage *>(incomingData);
+            if (msg->type == SCAN_REQUEST) {
+                respondWithIdentity(mac);
+                return;
+            }
+            if (msg->type == ILITE_IDENTITY) {
+                if (!esp_now_is_peer_exist(mac)) {
+                    esp_now_peer_info_t peerInfo{};
+                    memcpy(peerInfo.peer_addr, mac, 6);
+                    peerInfo.channel = 0;
+                    peerInfo.encrypt = false;
+                    esp_now_add_peer(&peerInfo);
+                }
+                memcpy(g_controllerMac, mac, 6);
+                g_paired = true;
+                acknowledgeController(mac);
+                return;
+            }
+        }
 
-extern int operationMode;
+        if (len == static_cast<int>(sizeof(ThrustCommand))) {
+            const ThrustCommand *cmd = reinterpret_cast<const ThrustCommand *>(incomingData);
+            if (cmd->magic == PACKET_MAGIC) {
+                g_lastCommand = *cmd;
+                g_lastCommandTime = millis();
+            }
+        }
+    }
 
-void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status)
-{
-  sent_Status = (status == ESP_NOW_SEND_SUCCESS);
-  if(!sent_Status) {
-    // preserve the index of the packet that failed so it can be resent
-    resendIndex = emission.INDEX;
-  }
+    bool initInternal(const char *ssid, const char *password, int tcpPort, esp_now_recv_cb_t recvCallback) {
+        (void)tcpPort;
+
+        WiFi.mode(WIFI_AP_STA);
+        WiFi.setTxPower(WIFI_POWER_8_5dBm);
+        WiFi.setSleep(false);
+        if (password && std::strlen(password) >= 8) {
+            WiFi.softAP(ssid, password);
+        } else {
+            WiFi.softAP(ssid);
+        }
+
+        if (esp_now_init() != ESP_OK) {
+            return false;
+        }
+
+        esp_now_peer_info_t peerInfo{};
+        memcpy(peerInfo.peer_addr, BroadcastMac, 6);
+        peerInfo.channel = 0;
+        peerInfo.encrypt = false;
+        if (!esp_now_is_peer_exist(BroadcastMac)) {
+            esp_now_add_peer(&peerInfo);
+        }
+
+        esp_now_register_recv_cb(recvCallback ? recvCallback : onDataRecvInternal);
+
+        g_paired = false;
+        memset(g_controllerMac, 0, sizeof(g_controllerMac));
+        g_lastCommand = ThrustCommand{PACKET_MAGIC, 1000, 0, 0, 0, false};
+        g_lastCommandTime = 0;
+        return true;
+    }
+} // namespace
+
+const uint8_t BroadcastMac[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+
+bool init(const char *ssid, const char *password, int tcpPort) {
+    return initInternal(ssid, password, tcpPort, nullptr);
 }
 
-void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
-  memcpy(&reception, incomingData, sizeof(reception));
-  receive_Status=1;
+bool init(const char *ssid, const char *password, int tcpPort, esp_now_recv_cb_t recvCallback) {
+    return initInternal(ssid, password, tcpPort, recvCallback);
 }
 
-void packData(byte index)
-{
-  switch(index)
-  {
-    case PACK_TELEMETRY:
-      emission.INDEX = index;
-      emission.dataByte[0] = linePosition;
-      emission.dataByte[1] = front_distance;
-      emission.dataByte[2] = bot_distance;
-      emission.dataByte[3] = IRBias;
-      emission.dataByte[4] = average_count*Cm_per_Second_Conversion;
-      emission.dataByte[5] = batteryLevel;
-      emission.dataByte[6] = operationMode;
-      break;
-
-    case PACK_LINE:
-      emission.INDEX=index;
-      emission.dataByte[0] = sensor_readings[line_reading1];
-      emission.dataByte[1] = sensor_readings[line_reading2];
-      emission.dataByte[2] = sensor_readings[line_reading3];
-      emission.dataByte[3] = sensor_readings[line_reading4];
-      emission.dataByte[4] = lineThresholdsLowers[0];
-      emission.dataByte[5] = lineThresholdsLowers[1];
-      emission.dataByte[6] = lineThresholdsLowers[2];
-      emission.dataByte[7] = lineThresholdsLowers[3];
-      break;
-
-    case PACK_PID:
-      emission.INDEX= index;
-      emission.dataByte[0] = kp*100;
-      emission.dataByte[1] = kd*100;
-      emission.dataByte[3] = baseSpeed;
-      break;
-
-    case PACK_FIRE:
-      emission.INDEX= index;
-      emission.dataByte[0] = sensor_readings[fire_detection_left];
-      emission.dataByte[1] = sensor_readings[fire_detection_right];
-      emission.dataByte[3] = fireRange;
-      break;
-
-    default:
-    break;
-  }
+bool receiveCommand(ThrustCommand &cmd) {
+    cmd = g_lastCommand;
+    return g_paired;
 }
 
-bool sendData(byte index)
-{
-  packData(index);
-  esp_err_t result = esp_now_send(targetAddress, (uint8_t *)&emission, sizeof(emission));
-  if(result != ESP_OK) {
-    resendIndex = emission.INDEX;
-    return false;
-  }
-  resendIndex = 0;
-  return true;
+bool paired() {
+    return g_paired;
 }
 
-void processData(byte index)
-{
-  (void)index;
+bool sendTelemetry(const TelemetryPacket &packet) {
+    if (!g_paired) {
+        return false;
+    }
+    if (memcmp(g_controllerMac, "\0\0\0\0\0\0", 6) == 0) {
+        return false;
+    }
+    return esp_now_send(g_controllerMac, reinterpret_cast<const uint8_t *>(&packet), sizeof(packet)) == ESP_OK;
 }
+
+uint32_t lastCommandTimeMs() {
+    return g_lastCommandTime;
+}
+
+const uint8_t *controllerMac() {
+    return g_controllerMac;
+}
+
+} // namespace Comms
 

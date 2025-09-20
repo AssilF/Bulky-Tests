@@ -1,65 +1,60 @@
-#ifndef COMMS_H
-#define COMMS_H
+#pragma once
 
 #include <Arduino.h>
+#include <WiFi.h>
 #include <esp_now.h>
 
-// Destination address for ESP-NOW transmissions.
-extern uint8_t targetAddress[6];
+namespace Comms {
 
-// ESP-NOW peer information structure.
-extern esp_now_peer_info bot;
+constexpr uint32_t PACKET_MAGIC = 0xA1B2C3D4;
 
-// Status flags for communication callbacks.
-extern bool sent_Status;
-extern bool receive_Status;
+struct ThrustCommand {
+    uint32_t magic;
+    uint16_t throttle;
+    int8_t pitchAngle;
+    int8_t rollAngle;
+    int8_t yawAngle;
+    bool arm_motors;
+} __attribute__((packed));
 
-// Packet index definitions used when packing telemetry.
-enum PacketIndex : byte
-{
-  PACK_TELEMETRY = 0,
-  PACK_LINE      = 1,
-  PACK_PID       = 2,
-  PACK_FIRE      = 3,
+struct TelemetryPacket {
+    uint32_t magic;
+    float pitch;
+    float roll;
+    float yaw;
+    float pitchCorrection;
+    float rollCorrection;
+    float yawCorrection;
+    uint16_t throttle;
+    int8_t pitchAngle;
+    int8_t rollAngle;
+    int8_t yawAngle;
+    float verticalAcc;
+    uint32_t commandAge;
+} __attribute__((packed));
+
+enum PairingType : uint8_t {
+    SCAN_REQUEST = 0x01,
+    DRONE_IDENTITY = 0x02,
+    ILITE_IDENTITY = 0x03,
+    DRONE_ACK = 0x04,
 };
 
-// Communication data structures shared with the controller.
-struct receptionDataPacket
-{
-  byte Speed;
-  byte MotionState;
-  byte pitch;
-  byte yaw;
-  bool bool1[4];
-};
-extern receptionDataPacket reception;
+struct IdentityMessage {
+    uint8_t type;
+    char identity[16];
+    uint8_t mac[6];
+} __attribute__((packed));
 
-struct emissionDataPacket
-{
-  byte INDEX;
-  byte statusByte;
-  int dataByte[8];
-  byte okIndex;
-};
-extern emissionDataPacket emission;
+bool init(const char *ssid, const char *password, int tcpPort);
+bool init(const char *ssid, const char *password, int tcpPort, esp_now_recv_cb_t recvCallback);
 
-// ESP-NOW callback executed after packet transmission.
-void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status);
+bool receiveCommand(ThrustCommand &cmd);
+bool paired();
+bool sendTelemetry(const TelemetryPacket &packet);
+uint32_t lastCommandTimeMs();
+const uint8_t *controllerMac();
+extern const uint8_t BroadcastMac[6];
 
-// ESP-NOW callback executed when data is received.
-void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len);
+} // namespace Comms
 
-// Populate emission packet with telemetry.
-void packData(byte index);
-
-// Pack telemetry for the given index and transmit via ESP-NOW.
-// Returns true if the packet was queued for sending successfully.
-bool sendData(byte index);
-
-// Process received packets (stub).
-void processData(byte index);
-
-// Helper index used for resending data blocks.
-extern byte resendIndex;
-
-#endif // COMMS_H
