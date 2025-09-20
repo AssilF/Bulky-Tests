@@ -6,17 +6,12 @@
 
 #include <cctype>
 #include <cstring>
-
-#if defined(ESP_PLATFORM)
-#include <esp_idf_version.h>
-#endif
-
+#include <WiFi.h>
 #include <esp_err.h>
 
 extern int operationMode;
 
 namespace Comms {
-namespace {
     static_assert(sizeof(ControlPacket) == 8, "ControlPacket must remain 8 bytes");
     static_assert(sizeof(IdentityMessage) == 23, "IdentityMessage must remain 23 bytes");
 
@@ -216,7 +211,7 @@ namespace {
         g_paired = true;
     }
 
-    void onDataRecvInternal(const uint8_t *mac, const uint8_t *incomingData, int len) {
+    void IRAM_ATTR onEspNowDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
         if (mac == nullptr || incomingData == nullptr) {
             return;
         }
@@ -276,25 +271,9 @@ namespace {
             const IliteCommand *cmd = reinterpret_cast<const IliteCommand *>(incomingData);
             handleIliteCommand(mac, cmd);
             return;
-        }
+        };
     }
 
-#if defined(ESP_IDF_VERSION) && defined(ESP_IDF_VERSION_VAL)
-#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(4, 3, 0)
-    void IRAM_ATTR onEspNowDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomingData, int len) {
-        const uint8_t *mac = info ? info->src_addr : nullptr;
-        onDataRecvInternal(mac, incomingData, len);
-    }
-#else
-    void IRAM_ATTR onEspNowDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
-        onDataRecvInternal(mac, incomingData, len);
-    }
-#endif
-#else
-    void IRAM_ATTR onEspNowDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
-        onDataRecvInternal(mac, incomingData, len);
-    }
-#endif
 
     bool initInternal(const char *ssid, const char *password, int tcpPort, esp_now_recv_cb_t recvCallback) {
         (void)tcpPort;
@@ -321,7 +300,7 @@ namespace {
         }
 
         g_externalRecvCallback = recvCallback;
-        esp_now_register_recv_cb(&onDataRecvInternal);
+        esp_now_register_recv_cb(&onEspNowDataRecv);
         delay(10);
         g_paired = false;
         memset(g_controllerMac, 0, sizeof(g_controllerMac));
@@ -332,8 +311,7 @@ namespace {
         resendIndex = 0;
         memset(&emission, 0, sizeof(emission));
         return true;
-    }
-} // namespace
+    } // namespace
 
 TelemetryPacket emission{};
 uint8_t resendIndex = 0;
@@ -434,6 +412,5 @@ const uint8_t *controllerMac() {
 uint32_t lastIliteBroadcastTimeMs() {
     return g_lastIliteBroadcastTime;
 }
-
-} // namespace Comms
+}
 
