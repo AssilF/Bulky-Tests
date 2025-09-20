@@ -334,7 +334,7 @@ void setup() {
   //PWM drive defs
   ledcSetup(0,140,12); //pmp
   ledcSetup(1,10000,12); //LED, resulotion of 4096, might change if need to
-  ledcSetup(2,20000,12);
+  ledcSetup(2,20000,11); // 12-bit resolution can't achieve 20kHz with 80MHz clock
 
 
   ledcAttachPin(Pump_Pin,0);
