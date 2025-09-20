@@ -3,6 +3,8 @@
 #include <SPI.h>
 #include <Adafruit_PWMServoDriver.h>
 #include <ArduinoOTA.h>
+#include <algorithm>
+#include <cmath>
 
 #include <U8g2lib.h>
 
@@ -10,6 +12,7 @@
 #include "motion.h"
 #include "line.h"
 #include "comms.h"
+#include "thegill.h"
 
 U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0);
 //this is the13th of october, my laptop apparently cannot even keep up with my rate of writing :D:D:D:
@@ -132,8 +135,6 @@ constexpr char OTA_PASSWORD[] = "";
 constexpr uint16_t PAIRING_FEEDBACK_TONE_HZ = 1800;
 constexpr uint32_t PAIRING_FEEDBACK_DURATION_MS = 200;
 constexpr uint32_t PAIRING_FEEDBACK_PERIOD_MS = 1000;
-constexpr uint16_t ILITE_BROADCAST_TONE_HZ = 2400;
-constexpr uint32_t ILITE_BROADCAST_DURATION_MS = 300;
 
 struct ControlState {
   byte motion;
@@ -152,15 +153,12 @@ static ControlState controlState;
 static uint32_t lastPairingAckHandled = 0;
 static uint32_t pairingToneDeadline = 0;
 static uint32_t nextPairingToneTime = 0;
-static uint32_t lastIliteBroadcastHandled = 0;
-static uint32_t iliteToneDeadline = 0;
 
 static void resetControlState();
-static void applyCommand(const Comms::ControlPacket &cmd);
+static void applyCommand(const ThegillCommand &cmd);
 static void updateControlFromComms();
 static void initOTA();
 static void updatePairingFeedback();
-static void updateIliteBroadcastFeedback();
 static void updateBuzzerOutput();
 
 static void resetControlState()
@@ -177,28 +175,63 @@ static void resetControlState()
   controlState.cranePitch = 0;
 }
 
-static void applyCommand(const Comms::ControlPacket &cmd)
+static void applyCommand(const ThegillCommand &cmd)
 {
-  controlState.motion = cmd.MotionState;
-  controlState.speed = cmd.Speed;
-  controlState.pump = cmd.bool1[0];
-  controlState.flash = cmd.bool1[1];
-  controlState.buzzer = cmd.bool1[2];
-  controlState.cameraMode = cmd.bool1[3];
-  controlState.cameraYaw = static_cast<uint8_t>(constrain(static_cast<int>(cmd.yaw), 0, 180));
-  controlState.cameraPitch = static_cast<uint8_t>(constrain(static_cast<int>(cmd.pitch), 0, 180));
+  if (cmd.magic != THEGILL_PACKET_MAGIC) {
+    return;
+  }
+
+  constexpr float MAX_COMMAND = 1000.0f;
+  constexpr float MOTION_THRESHOLD = 50.0f;
+
+  const float leftAverage = 0.5f * (static_cast<float>(cmd.leftFront) + static_cast<float>(cmd.leftRear));
+  const float rightAverage = 0.5f * (static_cast<float>(cmd.rightFront) + static_cast<float>(cmd.rightRear));
+
+  const float absLeft = std::fabs(leftAverage);
+  const float absRight = std::fabs(rightAverage);
+  const float meanMagnitude = 0.5f * (absLeft + absRight);
+  const float normalizedMagnitude = std::min(meanMagnitude / MAX_COMMAND, 1.0f);
+
+  controlState.speed = static_cast<uint8_t>(constrain(static_cast<int>(normalizedMagnitude * 255.0f), 0, 255));
+
+  uint8_t motion = STOP;
+  if ((cmd.flags & GILL_FLAG_BRAKE) != 0) {
+    motion = BREAK;
+  } else if (absLeft < MOTION_THRESHOLD && absRight < MOTION_THRESHOLD) {
+    motion = STOP;
+  } else if (leftAverage > MOTION_THRESHOLD && rightAverage > MOTION_THRESHOLD) {
+    motion = MOVE_FRONT;
+  } else if (leftAverage < -MOTION_THRESHOLD && rightAverage < -MOTION_THRESHOLD) {
+    motion = MOVE_BACK;
+  } else if (leftAverage > MOTION_THRESHOLD && rightAverage < -MOTION_THRESHOLD) {
+    motion = ROTATE_LEFT;
+  } else if (leftAverage < -MOTION_THRESHOLD && rightAverage > MOTION_THRESHOLD) {
+    motion = ROTATE_RIGHT;
+  } else if (leftAverage > rightAverage) {
+    motion = TURN_LEFT;
+  } else if (rightAverage > leftAverage) {
+    motion = TURN_RIGHT;
+  }
+  controlState.motion = motion;
+
+  controlState.pump = false;
+  controlState.flash = false;
+  controlState.buzzer = (cmd.flags & GILL_FLAG_HONK) != 0;
+  controlState.cameraMode = true;
+  controlState.cameraYaw = 90;
+  controlState.cameraPitch = 90;
   controlState.craneYaw = controlState.cameraYaw;
   controlState.cranePitch = controlState.cameraPitch;
 }
 
 static void updateControlFromComms()
 {
-  Comms::ControlPacket command{};
+  ThegillCommand command{};
   bool linked = Comms::receiveCommand(command);
   uint32_t lastCommand = Comms::lastCommandTimeMs();
   uint32_t age = lastCommand ? (millis() - lastCommand) : (COMMAND_TIMEOUT_MS + 1);
 
-  if (linked && lastCommand != 0 && age <= COMMAND_TIMEOUT_MS) {
+  if (linked && lastCommand != 0 && age <= COMMAND_TIMEOUT_MS && command.magic == THEGILL_PACKET_MAGIC) {
     applyCommand(command);
   } else {
     resetControlState();
@@ -267,31 +300,12 @@ static void updatePairingFeedback()
   }
 }
 
-static void updateIliteBroadcastFeedback()
-{
-  uint32_t eventTime = Comms::lastIliteBroadcastTimeMs();
-  if (eventTime != 0 && eventTime != lastIliteBroadcastHandled) {
-    lastIliteBroadcastHandled = eventTime;
-    iliteToneDeadline = millis() + ILITE_BROADCAST_DURATION_MS;
-  }
-}
-
 static void updateBuzzerOutput()
 {
   if (controlState.buzzer) {
     sound(1300);
     pairingToneDeadline = 0;
-    iliteToneDeadline = 0;
     return;
-  }
-
-  if (iliteToneDeadline != 0) {
-    uint32_t now = millis();
-    if (static_cast<int32_t>(iliteToneDeadline - now) > 0) {
-      sound(ILITE_BROADCAST_TONE_HZ);
-      return;
-    }
-    iliteToneDeadline = 0;
   }
 
   if (pairingToneDeadline != 0) {
@@ -443,7 +457,6 @@ void loop() {
   processLine();
   updateControlFromComms();
   updatePairingFeedback();
-  updateIliteBroadcastFeedback();
   projectMotion(controlState.motion, controlState.speed);
   if(controlState.pump){pump(4096);} else{pump(0);} 
   if(controlState.flash){flash(4096);} else{flash(0);} 
@@ -459,6 +472,5 @@ void loop() {
     craneDeploy(controlState.cranePitch);
   }
 
-  Comms::sendTelemetry(Comms::PACK_TELEMETRY);
   ArduinoOTA.handle();
 }
