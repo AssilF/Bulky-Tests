@@ -6,6 +6,8 @@
 
 #include <cstring>
 
+extern int operationMode;
+
 namespace Comms {
 namespace {
     static_assert(sizeof(ControlPacket) == 8, "ControlPacket must remain 8 bytes");
@@ -108,8 +110,6 @@ namespace {
 TelemetryPacket emission{};
 uint8_t resendIndex = 0;
 
-extern int operationMode;
-
 const uint8_t BroadcastMac[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 
 bool init(const char *ssid, const char *password, int tcpPort) {
@@ -142,7 +142,7 @@ void packTelemetry(PacketIndex index, TelemetryPacket &packet) {
             packet.dataByte[3] = IRBias;
             packet.dataByte[4] = static_cast<int>(average_count * CM_PER_SECOND_CONVERSION);
             packet.dataByte[5] = batteryLevel;
-            packet.dataByte[6] = operationMode;
+            packet.dataByte[6] = ::operationMode;
             break;
         case PACK_LINE:
             packet.dataByte[0] = sensor_readings[line_reading1];
