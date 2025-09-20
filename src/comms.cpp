@@ -31,6 +31,7 @@ namespace {
     uint32_t g_lastCommandTime = 0;
     uint32_t g_lastPairingAckTime = 0;
     uint32_t g_lastIliteBroadcastTime = 0;
+    bool g_espNowInitialised = false;
 
     bool isBroadcastMac(const uint8_t *mac) {
         if (mac == nullptr) {
@@ -279,9 +280,16 @@ namespace {
             WiFi.softAP(ssid);
         }
 
+        if (g_espNowInitialised) {
+            esp_now_deinit();
+            g_espNowInitialised = false;
+        }
+
         if (esp_now_init() != ESP_OK) {
             return false;
         }
+
+        g_espNowInitialised = true;
 
         esp_now_peer_info_t peerInfo{};
         memcpy(peerInfo.peer_addr, BroadcastMac, 6);
