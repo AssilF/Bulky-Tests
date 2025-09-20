@@ -125,7 +125,7 @@ int operationMode;
 #define visionDrivenMode 7
 
 constexpr char WIFI_SSID[] = "Bulky Telemetry Port";
-constexpr char WIFI_PASSWORD[] = "";
+constexpr char WIFI_PASSWORD[] = "ASCE321#";
 constexpr uint32_t COMMAND_TIMEOUT_MS = 500;
 constexpr char OTA_HOSTNAME[] = "bulky-drone";
 constexpr char OTA_PASSWORD[] = "";
