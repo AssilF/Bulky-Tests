@@ -121,6 +121,21 @@ namespace {
         return BroadcastMac;
     }
 
+    void ensurePeerRegistered(const uint8_t *mac) {
+        if (!macValid(mac)) {
+            return;
+        }
+        if (esp_now_is_peer_exist(mac)) {
+            return;
+        }
+
+        esp_now_peer_info_t peerInfo{};
+        memcpy(peerInfo.peer_addr, mac, 6);
+        peerInfo.channel = 0;
+        peerInfo.encrypt = false;
+        esp_now_add_peer(&peerInfo);
+    }
+
     void respondWithIdentity(const IdentityMessage *request, const uint8_t *mac) {
         const uint8_t *primary = request ? request->mac : nullptr;
         if (macValid(primary)) {
@@ -148,21 +163,6 @@ namespace {
         strncpy(ack.identity, "Bulky", sizeof(ack.identity) - 1);
         WiFi.macAddress(ack.mac);
         esp_now_send(mac, reinterpret_cast<const uint8_t *>(&ack), sizeof(ack));
-    }
-
-    void ensurePeerRegistered(const uint8_t *mac) {
-        if (!macValid(mac)) {
-            return;
-        }
-        if (esp_now_is_peer_exist(mac)) {
-            return;
-        }
-
-        esp_now_peer_info_t peerInfo{};
-        memcpy(peerInfo.peer_addr, mac, 6);
-        peerInfo.channel = 0;
-        peerInfo.encrypt = false;
-        esp_now_add_peer(&peerInfo);
     }
 
     bool controllerMacValid() {
