@@ -70,6 +70,7 @@ bool isEliteControllerIdentity(const IdentityMessage &msg) {
 }
 
 void onDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
+    
     if (len == static_cast<int>(sizeof(IdentityMessage)) && !g_paired) {
         const IdentityMessage *msg = reinterpret_cast<const IdentityMessage *>(incomingData);
         if (msg->type == SCAN_REQUEST) {
@@ -108,7 +109,7 @@ void onDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
     }
 }
 
-bool initInternal(const char *ssid, const char *password, int tcpPort, esp_now_recv_cb_t recvCallback) {
+bool initInternal(const char *ssid, const char *password, int tcpPort, esp_now_recv_cb_t recvCallbac k) {
     (void)tcpPort;
     WiFi.mode(WIFI_AP_STA);
     WiFi.setTxPower(WIFI_POWER_8_5dBm);
