@@ -32,6 +32,7 @@ namespace {
     uint32_t g_lastPairingAckTime = 0;
     uint32_t g_lastIliteBroadcastTime = 0;
     bool g_espNowInitialised = false;
+    esp_now_recv_cb_t g_externalRecvCallback = nullptr;
 
     bool isBroadcastMac(const uint8_t *mac) {
         if (mac == nullptr) {
@@ -217,6 +218,10 @@ namespace {
         if (mac == nullptr || incomingData == nullptr) {
             return;
         }
+
+        if (g_externalRecvCallback) {
+            g_externalRecvCallback(mac, incomingData, len);
+        }
         if (len == static_cast<int>(sizeof(IdentityMessage))) {
             const IdentityMessage *msg = reinterpret_cast<const IdentityMessage *>(incomingData);
             if (isIliteIdentity(*msg) && !macValid(msg->mac)) {
@@ -296,6 +301,7 @@ namespace {
             esp_now_add_peer(&peerInfo);
         }
 
+        g_externalRecvCallback = recvCallback;
         esp_now_register_recv_cb(&onDataRecvInternal);
         delay(10);
         g_paired = false;
