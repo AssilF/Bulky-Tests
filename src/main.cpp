@@ -126,7 +126,6 @@ int operationMode;
 constexpr char WIFI_SSID[] = "Bulky Telemetry Port";
 constexpr char WIFI_PASSWORD[] = "";
 constexpr uint32_t COMMAND_TIMEOUT_MS = 500;
-constexpr float SPEED_TO_CM_PER_SEC = 10.362f;
 
 struct ControlState {
   byte motion;
@@ -338,28 +337,5 @@ void loop() {
     craneDeploy(controlState.cranePitch);
   }
 
-  Comms::TelemetryPacket packet{};
-  packet.magic = Comms::PACKET_MAGIC;
-  packet.pitch = static_cast<float>(linePosition);
-  packet.roll = static_cast<float>(front_distance);
-  packet.yaw = static_cast<float>(bot_distance);
-  packet.pitchCorrection = static_cast<float>(IRBias);
-  packet.rollCorrection = static_cast<float>(batteryLevel);
-  packet.yawCorrection = static_cast<float>(operationMode);
-  packet.throttle = static_cast<uint16_t>(controlState.speed);
-  packet.pitchAngle = static_cast<int8_t>(constrain(map(static_cast<long>(controlState.cameraPitch), 0L, 180L, -90L, 90L), -90L, 90L));
-  packet.rollAngle = static_cast<int8_t>(constrain(map(static_cast<long>(controlState.cameraYaw), 0L, 180L, -90L, 90L), -90L, 90L));
-  int8_t yawState = 0;
-  if(controlState.motion == ROTATE_RIGHT){
-    yawState = 45;
-  }else if(controlState.motion == ROTATE_LEFT){
-    yawState = -45;
-  }else if(controlState.motion == MOVE_BACK){
-    yawState = 90;
-  }
-  packet.yawAngle = yawState;
-  packet.verticalAcc = static_cast<float>(average_count * SPEED_TO_CM_PER_SEC);
-  uint32_t lastCommand = Comms::lastCommandTimeMs();
-  packet.commandAge = lastCommand ? (millis() - lastCommand) : 0;
-  Comms::sendTelemetry(packet);
+  Comms::sendTelemetry(Comms::PACK_TELEMETRY);
 }

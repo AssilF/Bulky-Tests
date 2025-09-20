@@ -1,10 +1,17 @@
 #include "comms.h"
 
+#include "line.h"
+#include "motion.h"
+#include "sensors.h"
+
 #include <cstring>
 
 namespace Comms {
 namespace {
     static_assert(sizeof(ControlPacket) == 8, "ControlPacket must remain 8 bytes");
+
+    constexpr float CM_PER_SECOND_CONVERSION = 10.362f;
+
     bool g_paired = false;
     ControlPacket g_lastCommand{};
     uint8_t g_controllerMac[6] = {0};
@@ -22,6 +29,15 @@ namespace {
         IdentityMessage ack{};
         ack.type = DRONE_ACK;
         esp_now_send(mac, reinterpret_cast<const uint8_t *>(&ack), sizeof(ack));
+    }
+
+    bool controllerMacValid() {
+        for (uint8_t byte : g_controllerMac) {
+            if (byte != 0) {
+                return true;
+            }
+        }
+        return false;
     }
 
     void onDataRecvInternal(const uint8_t *mac, const uint8_t *incomingData, int len) {
@@ -83,9 +99,16 @@ namespace {
         memset(g_controllerMac, 0, sizeof(g_controllerMac));
         g_lastCommand = ControlPacket{};
         g_lastCommandTime = 0;
+        resendIndex = 0;
+        memset(&emission, 0, sizeof(emission));
         return true;
     }
 } // namespace
+
+TelemetryPacket emission{};
+uint8_t resendIndex = 0;
+
+extern int operationMode;
 
 const uint8_t BroadcastMac[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 
@@ -106,14 +129,64 @@ bool paired() {
     return g_paired;
 }
 
+void packTelemetry(PacketIndex index, TelemetryPacket &packet) {
+    packet = {};
+    packet.INDEX = static_cast<uint8_t>(index);
+    packet.okIndex = packet.INDEX;
+
+    switch (index) {
+        case PACK_TELEMETRY:
+            packet.dataByte[0] = linePosition;
+            packet.dataByte[1] = front_distance;
+            packet.dataByte[2] = bot_distance;
+            packet.dataByte[3] = IRBias;
+            packet.dataByte[4] = static_cast<int>(average_count * CM_PER_SECOND_CONVERSION);
+            packet.dataByte[5] = batteryLevel;
+            packet.dataByte[6] = operationMode;
+            break;
+        case PACK_LINE:
+            packet.dataByte[0] = sensor_readings[line_reading1];
+            packet.dataByte[1] = sensor_readings[line_reading2];
+            packet.dataByte[2] = sensor_readings[line_reading3];
+            packet.dataByte[3] = sensor_readings[line_reading4];
+            packet.dataByte[4] = lineThresholdsLowers[0];
+            packet.dataByte[5] = lineThresholdsLowers[1];
+            packet.dataByte[6] = lineThresholdsLowers[2];
+            packet.dataByte[7] = lineThresholdsLowers[3];
+            break;
+        case PACK_PID:
+            packet.dataByte[0] = static_cast<int>(kp * 100);
+            packet.dataByte[1] = static_cast<int>(kd * 100);
+            packet.dataByte[3] = baseSpeed;
+            break;
+        case PACK_FIRE:
+            packet.dataByte[0] = sensor_readings[fire_detection_left];
+            packet.dataByte[1] = sensor_readings[fire_detection_right];
+            packet.dataByte[3] = fireRange;
+            break;
+        default:
+            break;
+    }
+}
+
 bool sendTelemetry(const TelemetryPacket &packet) {
-    if (!g_paired) {
+    if (!g_paired || !controllerMacValid()) {
         return false;
     }
-    if (memcmp(g_controllerMac, "\0\0\0\0\0\0", 6) == 0) {
+
+    esp_err_t result = esp_now_send(g_controllerMac, reinterpret_cast<const uint8_t *>(&packet), sizeof(packet));
+    if (result != ESP_OK) {
+        resendIndex = packet.INDEX;
         return false;
     }
-    return esp_now_send(g_controllerMac, reinterpret_cast<const uint8_t *>(&packet), sizeof(packet)) == ESP_OK;
+
+    resendIndex = 0;
+    return true;
+}
+
+bool sendTelemetry(PacketIndex index) {
+    packTelemetry(index, emission);
+    return sendTelemetry(emission);
 }
 
 uint32_t lastCommandTimeMs() {
