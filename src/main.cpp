@@ -129,6 +129,8 @@ constexpr char WIFI_PASSWORD[] = "ASCE321#";
 constexpr uint32_t COMMAND_TIMEOUT_MS = 500;
 constexpr char OTA_HOSTNAME[] = "bulky-drone";
 constexpr char OTA_PASSWORD[] = "";
+constexpr uint16_t PAIRING_FEEDBACK_TONE_HZ = 1800;
+constexpr uint32_t PAIRING_FEEDBACK_DURATION_MS = 200;
 
 struct ControlState {
   byte motion;
@@ -144,11 +146,15 @@ struct ControlState {
 };
 
 static ControlState controlState;
+static uint32_t lastPairingAckHandled = 0;
+static uint32_t pairingToneDeadline = 0;
 
 static void resetControlState();
 static void applyCommand(const Comms::ControlPacket &cmd);
 static void updateControlFromComms();
 static void initOTA();
+static void updatePairingFeedback();
+static void updateBuzzerOutput();
 
 static void resetControlState()
 {
@@ -229,6 +235,39 @@ static void initOTA()
   ArduinoOTA.begin();
   Serial.print("OTA Ready. IP address: ");
   Serial.println(WiFi.softAPIP());
+}
+
+static void updatePairingFeedback()
+{
+  uint32_t ackTime = Comms::lastPairingAckTimeMs();
+  if (ackTime != 0 && ackTime != lastPairingAckHandled) {
+    lastPairingAckHandled = ackTime;
+    pairingToneDeadline = millis() + PAIRING_FEEDBACK_DURATION_MS;
+  }
+
+  if (!Comms::paired()) {
+    pairingToneDeadline = 0;
+  }
+}
+
+static void updateBuzzerOutput()
+{
+  if (controlState.buzzer) {
+    sound(1300);
+    pairingToneDeadline = 0;
+    return;
+  }
+
+  if (pairingToneDeadline != 0) {
+    uint32_t now = millis();
+    if (static_cast<int32_t>(pairingToneDeadline - now) > 0) {
+      sound(PAIRING_FEEDBACK_TONE_HZ);
+      return;
+    }
+    pairingToneDeadline = 0;
+  }
+
+  sound(0);
 }
 
 void action()
@@ -367,10 +406,11 @@ void loop() {
   lineMode=0;
   processLine();
   updateControlFromComms();
+  updatePairingFeedback();
   projectMotion(controlState.motion, controlState.speed);
-  if(controlState.pump){pump(4096);} else{pump(0);}
-  if(controlState.flash){flash(4096);} else{flash(0);}
-  if(controlState.buzzer){sound(1300);} else{sound(0);}
+  if(controlState.pump){pump(4096);} else{pump(0);} 
+  if(controlState.flash){flash(4096);} else{flash(0);} 
+  updateBuzzerOutput();
   if(controlState.cameraMode)
   {
     camYaw(map(controlState.cameraYaw,0,180,0,90));
