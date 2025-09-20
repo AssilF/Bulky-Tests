@@ -35,11 +35,10 @@ class EspNowDiscovery {
   void handleDiscoveryPacket(const uint8_t *mac, const Comm::DiscoveryPacket &packet);
   void handleFeedbackPacket(const Comm::FeedbackPacket &packet);
   void sendIliteIdentity(const std::array<uint8_t, 6> &mac, const String &droneName);
-  void sendIliteDroneIdentity(const std::array<uint8_t, 6> &mac);
-  void sendIliteDroneAck(const std::array<uint8_t, 6> &mac);
 
   bool ensurePeer(const std::array<uint8_t, 6> &mac);
   bool handleIliteMessage(const uint8_t *mac, const uint8_t *data, int len);
+  void sendIliteScanRequest();
 
   Comm::PeerRegistry &registry_;
   std::array<uint8_t, 6> localMac_{};
@@ -48,4 +47,5 @@ class EspNowDiscovery {
   bool scanning_ = false;
   TaskHandle_t taskHandle_ = nullptr;
   mutable portMUX_TYPE stateMutex_ = portMUX_INITIALIZER_UNLOCKED;
+  uint32_t nextScanRequestMs_ = 0;
 };
