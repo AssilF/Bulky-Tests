@@ -111,16 +111,32 @@ namespace {
         return false;
     }
 
-    void respondWithIdentity(const uint8_t *mac) {
-        if (mac == nullptr) {
-            return;
+    const uint8_t *selectValidMac(const IdentityMessage *msg, const uint8_t *fallback) {
+        if (msg && macValid(msg->mac)) {
+            return msg->mac;
         }
-        ensurePeerRegistered(mac);
+        if (macValid(fallback)) {
+            return fallback;
+        }
+        return BroadcastMac;
+    }
+
+    void respondWithIdentity(const IdentityMessage *request, const uint8_t *mac) {
+        const uint8_t *primary = request ? request->mac : nullptr;
+        if (macValid(primary)) {
+            ensurePeerRegistered(primary);
+        }
+        if (macValid(mac)) {
+            ensurePeerRegistered(mac);
+        }
+
+        const uint8_t *target = selectValidMac(request, mac);
+
         IdentityMessage resp{};
         resp.type = DRONE_IDENTITY;
         strncpy(resp.identity, "Bulky", sizeof(resp.identity) - 1);
         WiFi.macAddress(resp.mac);
-        esp_now_send(mac, reinterpret_cast<const uint8_t *>(&resp), sizeof(resp));
+        esp_now_send(target, reinterpret_cast<const uint8_t *>(&resp), sizeof(resp));
     }
 
     void acknowledgeController(const uint8_t *mac) {
@@ -191,7 +207,7 @@ namespace {
         if (len == static_cast<int>(sizeof(IdentityMessage))) {
             const IdentityMessage *msg = reinterpret_cast<const IdentityMessage *>(incomingData);
             if (msg->type == SCAN_REQUEST) {
-                respondWithIdentity(mac);
+                respondWithIdentity(msg, mac);
                 return;
             }
             if (isEliteControllerIdentity(*msg)) {
