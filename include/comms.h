@@ -8,13 +8,12 @@ namespace Comms {
 
 constexpr uint32_t PACKET_MAGIC = 0xA1B2C3D4;
 
-struct ThrustCommand {
-    uint32_t magic;
-    uint16_t throttle;
-    int8_t pitchAngle;
-    int8_t rollAngle;
-    int8_t yawAngle;
-    bool arm_motors;
+struct ControlPacket {
+    uint8_t Speed;
+    uint8_t MotionState;
+    uint8_t pitch;
+    uint8_t yaw;
+    bool bool1[4];
 } __attribute__((packed));
 
 struct TelemetryPacket {
@@ -49,7 +48,7 @@ struct IdentityMessage {
 bool init(const char *ssid, const char *password, int tcpPort);
 bool init(const char *ssid, const char *password, int tcpPort, esp_now_recv_cb_t recvCallback);
 
-bool receiveCommand(ThrustCommand &cmd);
+bool receiveCommand(ControlPacket &cmd);
 bool paired();
 bool sendTelemetry(const TelemetryPacket &packet);
 uint32_t lastCommandTimeMs();

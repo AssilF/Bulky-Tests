@@ -4,8 +4,9 @@
 
 namespace Comms {
 namespace {
+    static_assert(sizeof(ControlPacket) == 8, "ControlPacket must remain 8 bytes");
     bool g_paired = false;
-    ThrustCommand g_lastCommand{PACKET_MAGIC, 1000, 0, 0, 0, false};
+    ControlPacket g_lastCommand{};
     uint8_t g_controllerMac[6] = {0};
     uint32_t g_lastCommandTime = 0;
 
@@ -45,12 +46,10 @@ namespace {
             }
         }
 
-        if (len == static_cast<int>(sizeof(ThrustCommand))) {
-            const ThrustCommand *cmd = reinterpret_cast<const ThrustCommand *>(incomingData);
-            if (cmd->magic == PACKET_MAGIC) {
-                g_lastCommand = *cmd;
-                g_lastCommandTime = millis();
-            }
+        if (len == static_cast<int>(sizeof(ControlPacket))) {
+            const ControlPacket *cmd = reinterpret_cast<const ControlPacket *>(incomingData);
+            g_lastCommand = *cmd;
+            g_lastCommandTime = millis();
         }
     }
 
@@ -82,7 +81,7 @@ namespace {
 
         g_paired = false;
         memset(g_controllerMac, 0, sizeof(g_controllerMac));
-        g_lastCommand = ThrustCommand{PACKET_MAGIC, 1000, 0, 0, 0, false};
+        g_lastCommand = ControlPacket{};
         g_lastCommandTime = 0;
         return true;
     }
@@ -98,7 +97,7 @@ bool init(const char *ssid, const char *password, int tcpPort, esp_now_recv_cb_t
     return initInternal(ssid, password, tcpPort, recvCallback);
 }
 
-bool receiveCommand(ThrustCommand &cmd) {
+bool receiveCommand(ControlPacket &cmd) {
     cmd = g_lastCommand;
     return g_paired;
 }

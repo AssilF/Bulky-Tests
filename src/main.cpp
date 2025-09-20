@@ -144,7 +144,7 @@ struct ControlState {
 static ControlState controlState;
 
 static void resetControlState();
-static void applyCommand(const Comms::ThrustCommand &cmd);
+static void applyCommand(const Comms::ControlPacket &cmd);
 static void updateControlFromComms();
 
 static void resetControlState()
@@ -161,51 +161,28 @@ static void resetControlState()
   controlState.cranePitch = 0;
 }
 
-static void applyCommand(const Comms::ThrustCommand &cmd)
+static void applyCommand(const Comms::ControlPacket &cmd)
 {
-  int16_t throttle = static_cast<int16_t>(cmd.throttle) - 1000;
-  int16_t absThrottle = abs(throttle);
-  long mappedSpeed = map(static_cast<long>(absThrottle), 0L, 1000L, 0L, 100L);
-  uint8_t driveSpeed = static_cast<uint8_t>(constrain(mappedSpeed, 0L, 100L));
-
-  byte motion = STOP;
-  if (throttle > 50) {
-    motion = MOVE_FRONT;
-  } else if (throttle < -50) {
-    motion = MOVE_BACK;
-  }
-
-  int16_t yaw = cmd.yawAngle;
-  if (yaw > 20) {
-    motion = ROTATE_RIGHT;
-  } else if (yaw < -20) {
-    motion = ROTATE_LEFT;
-  }
-
-  if (motion == STOP) {
-    driveSpeed = 0;
-  }
-
-  controlState.motion = motion;
-  controlState.speed = driveSpeed;
-  controlState.pump = cmd.arm_motors;
-  controlState.flash = cmd.rollAngle > 30;
-  controlState.buzzer = cmd.rollAngle < -30;
-  controlState.cameraYaw = static_cast<uint8_t>(constrain(map(static_cast<long>(cmd.rollAngle), -90L, 90L, 0L, 180L), 0L, 180L));
-  controlState.cameraPitch = static_cast<uint8_t>(constrain(map(static_cast<long>(cmd.pitchAngle), -90L, 90L, 0L, 180L), 0L, 180L));
+  controlState.motion = cmd.MotionState;
+  controlState.speed = cmd.Speed;
+  controlState.pump = cmd.bool1[0];
+  controlState.flash = cmd.bool1[1];
+  controlState.buzzer = cmd.bool1[2];
+  controlState.cameraMode = cmd.bool1[3];
+  controlState.cameraYaw = static_cast<uint8_t>(constrain(static_cast<int>(cmd.yaw), 0, 180));
+  controlState.cameraPitch = static_cast<uint8_t>(constrain(static_cast<int>(cmd.pitch), 0, 180));
   controlState.craneYaw = controlState.cameraYaw;
   controlState.cranePitch = controlState.cameraPitch;
-  controlState.cameraMode = cmd.pitchAngle >= 0;
 }
 
 static void updateControlFromComms()
 {
-  Comms::ThrustCommand command{};
+  Comms::ControlPacket command{};
   bool linked = Comms::receiveCommand(command);
   uint32_t lastCommand = Comms::lastCommandTimeMs();
   uint32_t age = lastCommand ? (millis() - lastCommand) : (COMMAND_TIMEOUT_MS + 1);
 
-  if (linked && command.magic == Comms::PACKET_MAGIC && age <= COMMAND_TIMEOUT_MS) {
+  if (linked && lastCommand != 0 && age <= COMMAND_TIMEOUT_MS) {
     applyCommand(command);
   } else {
     resetControlState();
@@ -352,8 +329,8 @@ void loop() {
   if(controlState.buzzer){sound(1300);} else{sound(0);}
   if(controlState.cameraMode)
   {
-    camYaw(controlState.cameraYaw);
-    camPitch(controlState.cameraPitch);
+    camYaw(map(controlState.cameraYaw,0,180,0,90));
+    camPitch(map(controlState.cameraPitch,0,180,0,90));
   }
   else
   {
