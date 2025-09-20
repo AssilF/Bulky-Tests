@@ -132,6 +132,8 @@ constexpr char OTA_PASSWORD[] = "";
 constexpr uint16_t PAIRING_FEEDBACK_TONE_HZ = 1800;
 constexpr uint32_t PAIRING_FEEDBACK_DURATION_MS = 200;
 constexpr uint32_t PAIRING_FEEDBACK_PERIOD_MS = 1000;
+constexpr uint16_t ILITE_BROADCAST_TONE_HZ = 2400;
+constexpr uint32_t ILITE_BROADCAST_DURATION_MS = 300;
 
 struct ControlState {
   byte motion;
@@ -150,12 +152,15 @@ static ControlState controlState;
 static uint32_t lastPairingAckHandled = 0;
 static uint32_t pairingToneDeadline = 0;
 static uint32_t nextPairingToneTime = 0;
+static uint32_t lastIliteBroadcastHandled = 0;
+static uint32_t iliteToneDeadline = 0;
 
 static void resetControlState();
 static void applyCommand(const Comms::ControlPacket &cmd);
 static void updateControlFromComms();
 static void initOTA();
 static void updatePairingFeedback();
+static void updateIliteBroadcastFeedback();
 static void updateBuzzerOutput();
 
 static void resetControlState()
@@ -262,12 +267,31 @@ static void updatePairingFeedback()
   }
 }
 
+static void updateIliteBroadcastFeedback()
+{
+  uint32_t eventTime = Comms::lastIliteBroadcastTimeMs();
+  if (eventTime != 0 && eventTime != lastIliteBroadcastHandled) {
+    lastIliteBroadcastHandled = eventTime;
+    iliteToneDeadline = millis() + ILITE_BROADCAST_DURATION_MS;
+  }
+}
+
 static void updateBuzzerOutput()
 {
   if (controlState.buzzer) {
     sound(1300);
     pairingToneDeadline = 0;
+    iliteToneDeadline = 0;
     return;
+  }
+
+  if (iliteToneDeadline != 0) {
+    uint32_t now = millis();
+    if (static_cast<int32_t>(iliteToneDeadline - now) > 0) {
+      sound(ILITE_BROADCAST_TONE_HZ);
+      return;
+    }
+    iliteToneDeadline = 0;
   }
 
   if (pairingToneDeadline != 0) {
@@ -419,6 +443,7 @@ void loop() {
   processLine();
   updateControlFromComms();
   updatePairingFeedback();
+  updateIliteBroadcastFeedback();
   projectMotion(controlState.motion, controlState.speed);
   if(controlState.pump){pump(4096);} else{pump(0);} 
   if(controlState.flash){flash(4096);} else{flash(0);} 
