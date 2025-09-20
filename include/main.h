@@ -1,8 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
-
-#include "comms.h"
+#include <array>
 
 struct ControlState {
   byte motion;
@@ -15,15 +14,14 @@ struct ControlState {
   uint8_t cameraPitch;
   uint8_t craneYaw;
   uint8_t cranePitch;
+  bool linkReady;
+  std::array<uint8_t, 6> targetMac;
+  uint32_t lastTelemetryMs;
 };
 
 extern ControlState controlState;
 
 void resetControlState();
-void applyCommand(const Comms::ControlPacket &cmd);
 void updateControlFromComms();
-void initOTA();
-void updatePairingFeedback();
-void updateIliteBroadcastFeedback();
 void updateBuzzerOutput();
 void action();

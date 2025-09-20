@@ -1,16 +1,19 @@
 #include <Arduino.h>
-#include <WiFi.h>
 #include <SPI.h>
-#include <Adafruit_PWMServoDriver.h>
+#include <WiFi.h>
 #include <ArduinoOTA.h>
+#include <Adafruit_PWMServoDriver.h>
 
 #include <U8g2lib.h>
 
 #include "sensors.h"
 #include "motion.h"
 #include "line.h"
-#include "comms.h"
 #include "main.h"
+#include "comm/BulkyPackets.h"
+#include "comm/PeerRegistry.h"
+#include "system/AudioFeedback.h"
+#include "EspNowDiscovery.h"
 
 U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0);
 //this is the13th of october, my laptop apparently cannot even keep up with my rate of writing :D:D:D:
@@ -125,31 +128,22 @@ int operationMode;
 #define calibrationMode 6
 #define visionDrivenMode 7
 
-constexpr char WIFI_SSID[] = "Bulky Telemetry Port";
-constexpr char WIFI_PASSWORD[] = "ASCE321#";
-constexpr uint32_t COMMAND_TIMEOUT_MS = 500;
-constexpr char OTA_HOSTNAME[] = "bulky-drone";
-constexpr char OTA_PASSWORD[] = "";
-constexpr uint16_t PAIRING_FEEDBACK_TONE_HZ = 1800;
-constexpr uint32_t PAIRING_FEEDBACK_DURATION_MS = 200;
-constexpr uint32_t PAIRING_FEEDBACK_PERIOD_MS = 1000;
-constexpr uint16_t ILITE_BROADCAST_TONE_HZ = 2400;
-constexpr uint32_t ILITE_BROADCAST_DURATION_MS = 300;
-
 ControlState controlState;
-static uint32_t lastPairingAckHandled = 0;
-static uint32_t pairingToneDeadline = 0;
-static uint32_t nextPairingToneTime = 0;
-static uint32_t lastIliteBroadcastHandled = 0;
-static uint32_t iliteToneDeadline = 0;
-
 void resetControlState();
-void applyCommand(const Comms::ControlPacket &cmd);
 void updateControlFromComms();
-void initOTA();
-void updatePairingFeedback();
-void updateIliteBroadcastFeedback();
 void updateBuzzerOutput();
+
+Comm::PeerRegistry peerRegistry;
+EspNowDiscovery discovery(peerRegistry);
+AudioFeedback audioFeedback([](uint16_t frequency) { ledcWriteTone(2, frequency); });
+bool uiDirty = true;
+uint32_t lastUiRenderMs = 0;
+
+Comm::ControlPacket buildControlPacket(const ControlState &state);
+void processPeerEvents();
+void drawPeerUi(uint32_t nowMs);
+String formatMac(const std::array<uint8_t, 6> &mac);
+String linkStateToString(Comm::LinkState state);
 
 void resetControlState()
 {
@@ -163,135 +157,188 @@ void resetControlState()
   controlState.cameraPitch = 90;
   controlState.craneYaw = 90;
   controlState.cranePitch = 0;
-}
-
-void applyCommand(const Comms::ControlPacket &cmd)
-{
-  controlState.motion = cmd.MotionState;
-  controlState.speed = cmd.Speed;
-  controlState.pump = cmd.bool1[0];
-  controlState.flash = cmd.bool1[1];
-  controlState.buzzer = cmd.bool1[2];
-  controlState.cameraMode = cmd.bool1[3];
-  controlState.cameraYaw = static_cast<uint8_t>(constrain(static_cast<int>(cmd.yaw), 0, 180));
-  controlState.cameraPitch = static_cast<uint8_t>(constrain(static_cast<int>(cmd.pitch), 0, 180));
-  controlState.craneYaw = controlState.cameraYaw;
-  controlState.cranePitch = controlState.cameraPitch;
+  controlState.linkReady = false;
+  controlState.targetMac.fill(0);
+  controlState.lastTelemetryMs = 0;
 }
 
 void updateControlFromComms()
 {
-  Comms::ControlPacket command{};
-  bool linked = Comms::receiveCommand(command);
-  uint32_t lastCommand = Comms::lastCommandTimeMs();
-  uint32_t age = lastCommand ? (millis() - lastCommand) : (COMMAND_TIMEOUT_MS + 1);
-
-  if (linked && lastCommand != 0 && age <= COMMAND_TIMEOUT_MS) {
-    applyCommand(command);
+  controlState.linkReady = peerRegistry.hasTarget();
+  if (controlState.linkReady) {
+    auto mac = peerRegistry.getTarget();
+    if (mac.has_value()) {
+      controlState.targetMac = mac.value();
+    }
   } else {
-    resetControlState();
-  }
-}
-
-void initOTA()
-{
-  ArduinoOTA.setHostname(OTA_HOSTNAME);
-  if (OTA_PASSWORD[0] != '\0') {
-    ArduinoOTA.setPassword(OTA_PASSWORD);
+    controlState.targetMac.fill(0);
   }
 
-  ArduinoOTA.onStart([]() {
-    Serial.println("OTA update starting");
-  });
-  ArduinoOTA.onEnd([]() {
-    Serial.println("OTA update finished");
-  });
-  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-    if (total != 0) {
-      uint32_t percent = (progress * 100U) / total;
-      Serial.printf("OTA Progress: %u%%\r\n", percent);
+  controlState.lastTelemetryMs = peerRegistry.lastTelemetryMs();
+
+  if (controlState.linkReady) {
+    Comm::ControlPacket packet = buildControlPacket(controlState);
+    if (!discovery.sendControl(packet)) {
+      Serial.println("[COMM] Failed to send control packet");
     }
-  });
-  ArduinoOTA.onError([](ota_error_t error) {
-    Serial.printf("OTA Error[%u]\n", static_cast<unsigned int>(error));
-    if (error == OTA_AUTH_ERROR) {
-      Serial.println("OTA Auth Failed");
-    } else if (error == OTA_BEGIN_ERROR) {
-      Serial.println("OTA Begin Failed");
-    } else if (error == OTA_CONNECT_ERROR) {
-      Serial.println("OTA Connect Failed");
-    } else if (error == OTA_RECEIVE_ERROR) {
-      Serial.println("OTA Receive Failed");
-    } else if (error == OTA_END_ERROR) {
-      Serial.println("OTA End Failed");
-    }
-  });
-
-  ArduinoOTA.begin();
-  Serial.print("OTA Ready. IP address: ");
-  Serial.println(WiFi.softAPIP());
-}
-
-void updatePairingFeedback()
-{
-  uint32_t now = millis();
-  uint32_t ackTime = Comms::lastPairingAckTimeMs();
-  if (ackTime != 0 && ackTime != lastPairingAckHandled) {
-    lastPairingAckHandled = ackTime;
-    pairingToneDeadline = now + PAIRING_FEEDBACK_DURATION_MS;
-    nextPairingToneTime = now + PAIRING_FEEDBACK_PERIOD_MS;
-  }
-
-  if (Comms::paired()) {
-    nextPairingToneTime = 0;
-    return;
-  }
-
-  if (pairingToneDeadline == 0) {
-    if (nextPairingToneTime == 0 || static_cast<int32_t>(now - nextPairingToneTime) >= 0) {
-      pairingToneDeadline = now + PAIRING_FEEDBACK_DURATION_MS;
-      nextPairingToneTime = now + PAIRING_FEEDBACK_PERIOD_MS;
-    }
-  }
-}
-
-void updateIliteBroadcastFeedback()
-{
-  uint32_t eventTime = Comms::lastIliteBroadcastTimeMs();
-  if (eventTime != 0 && eventTime != lastIliteBroadcastHandled) {
-    lastIliteBroadcastHandled = eventTime;
-    iliteToneDeadline = millis() + ILITE_BROADCAST_DURATION_MS;
   }
 }
 
 void updateBuzzerOutput()
 {
-  if (controlState.buzzer) {
-    sound(1300);
-    pairingToneDeadline = 0;
-    iliteToneDeadline = 0;
+  if (audioFeedback.isActive()) {
     return;
   }
 
-  if (iliteToneDeadline != 0) {
-    uint32_t now = millis();
-    if (static_cast<int32_t>(iliteToneDeadline - now) > 0) {
-      sound(ILITE_BROADCAST_TONE_HZ);
-      return;
+  if (controlState.buzzer) {
+    sound(1300);
+  } else {
+    sound(0);
+  }
+}
+
+Comm::ControlPacket buildControlPacket(const ControlState &state) {
+  Comm::ControlPacket packet;
+  packet.header.magic = Comm::kPacketMagic;
+  packet.header.version = Comm::kProtocolVersion;
+  packet.header.type = Comm::MessageType::Control;
+  packet.payload = Comm::encodeControlPayload(state.motion,
+                                              state.speed,
+                                              state.pump,
+                                              state.flash,
+                                              state.buzzer,
+                                              state.cameraMode,
+                                              state.cameraYaw,
+                                              state.cameraPitch,
+                                              state.craneYaw,
+                                              state.cranePitch);
+  return packet;
+}
+
+String formatMac(const std::array<uint8_t, 6> &mac) {
+  char buffer[18];
+  snprintf(buffer, sizeof(buffer), "%02X:%02X:%02X:%02X:%02X:%02X",
+           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  return String(buffer);
+}
+
+String linkStateToString(Comm::LinkState state) {
+  switch (state) {
+    case Comm::LinkState::Idle:
+      return "Idle";
+    case Comm::LinkState::Scanning:
+      return "Scanning";
+    case Comm::LinkState::Paired:
+      return "Paired";
+    case Comm::LinkState::Lost:
+      return "Lost";
+  }
+  return "Unknown";
+}
+
+void processPeerEvents() {
+  Comm::PeerEvent event;
+  bool dirty = false;
+  while (peerRegistry.popEvent(event)) {
+    dirty = true;
+    switch (event.type) {
+      case Comm::PeerEvent::Type::ScanStarted:
+        audioFeedback.playPattern(AudioFeedback::Pattern::ScanStart);
+        Serial.println("[COMM] Scan started");
+        break;
+      case Comm::PeerEvent::Type::ScanStopped:
+        audioFeedback.playPattern(AudioFeedback::Pattern::ScanStop);
+        Serial.println("[COMM] Scan stopped");
+        break;
+      case Comm::PeerEvent::Type::PeerFound:
+        audioFeedback.playPattern(AudioFeedback::Pattern::PeerFound);
+        Serial.print("[COMM] Peer found: ");
+        Serial.println(event.peer.name);
+        break;
+      case Comm::PeerEvent::Type::PeerUpdated:
+        Serial.print("[COMM] Peer updated: ");
+        Serial.println(event.peer.name);
+        break;
+      case Comm::PeerEvent::Type::PeerLost:
+        audioFeedback.playPattern(AudioFeedback::Pattern::TargetCleared);
+        Serial.print("[COMM] Peer lost: ");
+        Serial.println(event.peer.name);
+        break;
+      case Comm::PeerEvent::Type::PeerAcked:
+        audioFeedback.playPattern(AudioFeedback::Pattern::PeerAck);
+        Serial.print("[COMM] Peer acknowledged: ");
+        Serial.println(event.peer.name);
+        break;
+      case Comm::PeerEvent::Type::TargetSelected:
+        audioFeedback.playPattern(AudioFeedback::Pattern::TargetSelected);
+        Serial.print("[COMM] Target selected: ");
+        Serial.println(event.peer.name);
+        break;
+      case Comm::PeerEvent::Type::TargetCleared:
+        audioFeedback.playPattern(AudioFeedback::Pattern::TargetCleared);
+        Serial.println("[COMM] Target cleared");
+        break;
+      case Comm::PeerEvent::Type::TelemetryReceived:
+        controlState.lastTelemetryMs = peerRegistry.lastTelemetryMs();
+        break;
+      case Comm::PeerEvent::Type::TelemetryTimeout:
+        audioFeedback.playPattern(AudioFeedback::Pattern::TelemetryTimeout);
+        Serial.println("[COMM] Telemetry timeout");
+        break;
     }
-    iliteToneDeadline = 0;
+  }
+  if (dirty) {
+    uiDirty = true;
+  }
+}
+
+void drawPeerUi(uint32_t nowMs) {
+  if (!uiDirty && nowMs - lastUiRenderMs < 250) {
+    return;
+  }
+  lastUiRenderMs = nowMs;
+  uiDirty = false;
+
+  auto peers = peerRegistry.peers();
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_6x10_tf);
+  u8g2.setCursor(0, 10);
+  u8g2.print("Peers:");
+
+  for (size_t i = 0; i < peers.size() && i < 4; ++i) {
+    const auto &peer = peers[i];
+    bool isTarget = controlState.linkReady && controlState.targetMac == peer.mac;
+    u8g2.setCursor(0, 22 + static_cast<uint8_t>(i) * 10);
+    String label = peer.name.length() > 0 ? peer.name : formatMac(peer.mac);
+    if (label.length() > 14) {
+      label = label.substring(0, 14);
+    }
+    String prefix = isTarget ? "> " : "  ";
+    if (peer.acknowledged) {
+      prefix += "*";
+    } else {
+      prefix += " ";
+    }
+    u8g2.print(prefix + label);
   }
 
-  if (pairingToneDeadline != 0) {
-    uint32_t now = millis();
-    if (static_cast<int32_t>(pairingToneDeadline - now) > 0) {
-      sound(PAIRING_FEEDBACK_TONE_HZ);
-      return;
-    }
-    pairingToneDeadline = 0;
+  u8g2.setCursor(0, 54);
+  u8g2.print("Link: ");
+  u8g2.print(linkStateToString(peerRegistry.getLinkState()));
+  if (controlState.linkReady) {
+    uint32_t ageMs = nowMs - controlState.lastTelemetryMs;
+    u8g2.print(" ");
+    u8g2.print(ageMs / 1000.0f, 1);
+    u8g2.print("s");
   }
 
-  sound(0);
+  if (controlState.linkReady) {
+    u8g2.setCursor(0, 64);
+    u8g2.print("Target: ");
+    u8g2.print(formatMac(controlState.targetMac));
+  }
+
+  u8g2.sendBuffer();
 }
 
 void action()
@@ -351,7 +398,6 @@ void setup() {
   Serial.begin(115200);
   setCpuFrequencyMhz(240);
   Serial.print("About To commence @ Frequency of : ");
-  Serial.println(WiFi.macAddress());
   Serial.println(getCpuFrequencyMhz());
   delay(100);
 
@@ -366,15 +412,8 @@ void setup() {
   timerAlarmEnable(SpeedRetrieval_Handle);
 
   resetControlState();
-  if (!Comms::init(WIFI_SSID, WIFI_PASSWORD, 8000)) {
-    Serial.println("Failed to initialise communications");
-  } else {
-    delay(10);
-    Serial.println("Communications initialised");
-  }
-
-  initOTA();
-    delay(10);
+  Serial.println("Initializing wireless communications");
+  delay(10);
 
 
   //Servo/LED PWM BootUP  =============
@@ -410,6 +449,25 @@ void setup() {
   u8g2.print("VDrop");
   u8g2.sendBuffer();
 
+  if (!discovery.begin()) {
+    Serial.println("[COMM] Failed to initialize ESP-NOW discovery");
+  }
+
+  ArduinoOTA.setHostname("ilite-controller");
+  ArduinoOTA.onStart([]() {
+    audioFeedback.playPattern(AudioFeedback::Pattern::TargetCleared);
+  });
+  ArduinoOTA.onEnd([]() {
+    audioFeedback.playPattern(AudioFeedback::Pattern::TargetSelected);
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("[OTA] Error[%u]\n", error);
+    audioFeedback.playPattern(AudioFeedback::Pattern::TelemetryTimeout);
+  });
+  ArduinoOTA.begin();
+
+  uiDirty = true;
+  processPeerEvents();
 }
 
 
@@ -424,6 +482,11 @@ double lastLineError;
 double currentLineError;
 
 void loop() {
+  uint32_t now = millis();
+  ArduinoOTA.handle();
+  processPeerEvents();
+  audioFeedback.loop(now);
+
   sense(); //nothing shall be freezing, instead, work with instances and ticks and polling.
   getDistances();
   processBattery();
@@ -431,11 +494,10 @@ void loop() {
   lineMode=0;
   processLine();
   updateControlFromComms();
-  updatePairingFeedback();
-  updateIliteBroadcastFeedback();
+  drawPeerUi(now);
   projectMotion(controlState.motion, controlState.speed);
-  if(controlState.pump){pump(4096);} else{pump(0);} 
-  if(controlState.flash){flash(4096);} else{flash(0);} 
+  if(controlState.pump){pump(4096);} else{pump(0);}
+  if(controlState.flash){flash(4096);} else{flash(0);}
   updateBuzzerOutput();
   if(controlState.cameraMode)
   {
@@ -448,6 +510,4 @@ void loop() {
     craneDeploy(controlState.cranePitch);
   }
 
-  Comms::sendTelemetry(Comms::PACK_TELEMETRY);
-  ArduinoOTA.handle();
 }
