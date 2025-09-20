@@ -76,7 +76,7 @@ void onDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
             IdentityMessage resp{};
             resp.type = DRONE_IDENTITY;
             strncpy(resp.identity, "THEGILL", sizeof(resp.identity));
-            WiFi.softAPmacAddress(resp.mac);
+            WiFi.macAddress(resp.mac);
             esp_now_send(mac, reinterpret_cast<const uint8_t *>(&resp), sizeof(resp));
             return;
         }
@@ -87,7 +87,7 @@ void onDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
                 memcpy(peerInfo.peer_addr, mac, 6);
                 peerInfo.channel = 0;
                 peerInfo.encrypt = false;
-                peerInfo.ifidx = WIFI_IF_AP;
+                peerInfo.ifidx = WIFI_IF_STA;
                 esp_now_add_peer(&peerInfo);
             }
             IdentityMessage ack{};
@@ -123,7 +123,7 @@ bool initInternal(const char *ssid, const char *password, int tcpPort, esp_now_r
     memcpy(peerInfo.peer_addr, BroadcastMac, 6);
     peerInfo.channel = 0;
     peerInfo.encrypt = false;
-    peerInfo.ifidx = WIFI_IF_AP;
+    peerInfo.ifidx = WIFI_IF_STA;
     if (!esp_now_is_peer_exist(BroadcastMac)) {
         esp_now_add_peer(&peerInfo);
     }
