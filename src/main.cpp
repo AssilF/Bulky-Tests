@@ -1,6 +1,5 @@
 #include <Arduino.h>
 #include <WiFi.h>
-#include <esp_now.h>
 #include <SPI.h>
 #include <Adafruit_PWMServoDriver.h>
 
@@ -124,11 +123,76 @@ int operationMode;
 #define calibrationMode 6
 #define visionDrivenMode 7
 
+constexpr char WIFI_SSID[] = "Bulky Telemetry Port";
+constexpr char WIFI_PASSWORD[] = "";
+constexpr uint32_t COMMAND_TIMEOUT_MS = 500;
+
+struct ControlState {
+  byte motion;
+  byte speed;
+  bool pump;
+  bool flash;
+  bool buzzer;
+  bool cameraMode;
+  uint8_t cameraYaw;
+  uint8_t cameraPitch;
+  uint8_t craneYaw;
+  uint8_t cranePitch;
+};
+
+static ControlState controlState;
+
+static void resetControlState();
+static void applyCommand(const Comms::ControlPacket &cmd);
+static void updateControlFromComms();
+
+static void resetControlState()
+{
+  controlState.motion = STOP;
+  controlState.speed = 0;
+  controlState.pump = false;
+  controlState.flash = false;
+  controlState.buzzer = false;
+  controlState.cameraMode = true;
+  controlState.cameraYaw = 90;
+  controlState.cameraPitch = 90;
+  controlState.craneYaw = 90;
+  controlState.cranePitch = 0;
+}
+
+static void applyCommand(const Comms::ControlPacket &cmd)
+{
+  controlState.motion = cmd.MotionState;
+  controlState.speed = cmd.Speed;
+  controlState.pump = cmd.bool1[0];
+  controlState.flash = cmd.bool1[1];
+  controlState.buzzer = cmd.bool1[2];
+  controlState.cameraMode = cmd.bool1[3];
+  controlState.cameraYaw = static_cast<uint8_t>(constrain(static_cast<int>(cmd.yaw), 0, 180));
+  controlState.cameraPitch = static_cast<uint8_t>(constrain(static_cast<int>(cmd.pitch), 0, 180));
+  controlState.craneYaw = controlState.cameraYaw;
+  controlState.cranePitch = controlState.cameraPitch;
+}
+
+static void updateControlFromComms()
+{
+  Comms::ControlPacket command{};
+  bool linked = Comms::receiveCommand(command);
+  uint32_t lastCommand = Comms::lastCommandTimeMs();
+  uint32_t age = lastCommand ? (millis() - lastCommand) : (COMMAND_TIMEOUT_MS + 1);
+
+  if (linked && lastCommand != 0 && age <= COMMAND_TIMEOUT_MS) {
+    applyCommand(command);
+  } else {
+    resetControlState();
+  }
+}
+
 void action()
 {
   if(operationMode==radioControlledMode)
   {
-    
+
   }
 }
 
@@ -195,26 +259,12 @@ void setup() {
   timerAlarmWrite(SpeedRetrieval_Handle, 100000, true); //let's take a speed sample each 76ms maybe ? seems like a good compromise instinctively or something.
   timerAlarmEnable(SpeedRetrieval_Handle);
 
-
-
-  //Init Wifi & ESPNOW ===============
-  WiFi.mode(WIFI_STA); //just in case this is what helped with the uncought load prohibition exception.
-  debug("\nwifi loaded\n");
-  if (esp_now_init() != ESP_OK) {
-  debug("ESPnow said no :(")
-  }debug("\n\nespnow initialized\n")
-
-  esp_now_register_send_cb(OnDataSent); debug("sending callback set \n \n")//Sent Callback Function associated
-  memcpy(bot.peer_addr, targetAddress, 6); //putting the bot ID card into memory ;)
-  bot.channel = 0;     
-  bot.encrypt = false; //data won't be encrypted so we don't waste too much cpu juice
-
-  if (esp_now_add_peer(&bot) != ESP_OK){
-  debug("What the bot doin ?");
-  }debug("peer added \n")
-
-  esp_now_register_recv_cb(OnDataRecv); debug("reception callback set \n \n")//Recv Callback Function associated 
-  //===================================
+  resetControlState();
+  if (!Comms::init(WIFI_SSID, WIFI_PASSWORD, 0)) {
+    Serial.println("Failed to initialise communications");
+  } else {
+    Serial.println("Communications initialised");
+  }
 
 
 
@@ -265,29 +315,27 @@ double lastLineError;
 double currentLineError;
 
 void loop() {
-  // if(receive_Status){receive_Status=0;setMotion(reception.vector[0],reception.vector[1]);}
   sense(); //nothing shall be freezing, instead, work with instances and ticks and polling.
   getDistances();
   processBattery();
   processIRImissions();
   lineMode=0;
   processLine();
-  projectMotion(reception.MotionState,reception.Speed);
-  if(reception.bool1[0]){pump(4096);} else{pump(0);}
-  if(reception.bool1[1]){flash(4096);} else{flash(0);}
-  if(reception.bool1[2]){sound(1300);} else{sound(0);}
-  if(reception.bool1[3])
+  updateControlFromComms();
+  projectMotion(controlState.motion, controlState.speed);
+  if(controlState.pump){pump(4096);} else{pump(0);}
+  if(controlState.flash){flash(4096);} else{flash(0);}
+  if(controlState.buzzer){sound(1300);} else{sound(0);}
+  if(controlState.cameraMode)
   {
-    camYaw(map(reception.yaw,0,180,0,90));
-    camPitch(map(reception.pitch,0,180,0,90));
+    camYaw(map(controlState.cameraYaw,0,180,0,90));
+    camPitch(map(controlState.cameraPitch,0,180,0,90));
   }
   else
   {
-    craneOffset(reception.yaw);
-    craneDeploy(reception.pitch);
+    craneOffset(controlState.craneYaw);
+    craneDeploy(controlState.cranePitch);
   }
 
-  // debug("\reception Speed: ")debug(reception.Speed);
-  // debug("\reception MotionState: ")debug(String(reception.MotionState,BIN));
-  sendData(PACK_TELEMETRY);
+  Comms::sendTelemetry(Comms::PACK_TELEMETRY);
 }

@@ -1,65 +1,62 @@
-#ifndef COMMS_H
-#define COMMS_H
+#pragma once
 
 #include <Arduino.h>
+#include <WiFi.h>
 #include <esp_now.h>
 
-// Destination address for ESP-NOW transmissions.
-extern uint8_t targetAddress[6];
+namespace Comms {
 
-// ESP-NOW peer information structure.
-extern esp_now_peer_info bot;
+struct ControlPacket {
+    uint8_t Speed;
+    uint8_t MotionState;
+    uint8_t pitch;
+    uint8_t yaw;
+    bool bool1[4];
+} __attribute__((packed));
 
-// Status flags for communication callbacks.
-extern bool sent_Status;
-extern bool receive_Status;
-
-// Packet index definitions used when packing telemetry.
-enum PacketIndex : byte
-{
-  PACK_TELEMETRY = 0,
-  PACK_LINE      = 1,
-  PACK_PID       = 2,
-  PACK_FIRE      = 3,
+enum PacketIndex : uint8_t {
+    PACK_TELEMETRY = 0,
+    PACK_LINE = 1,
+    PACK_PID = 2,
+    PACK_FIRE = 3,
 };
 
-// Communication data structures shared with the controller.
-struct receptionDataPacket
-{
-  byte Speed;
-  byte MotionState;
-  byte pitch;
-  byte yaw;
-  bool bool1[4];
+struct TelemetryPacket {
+    uint8_t INDEX;
+    uint8_t statusByte;
+    int dataByte[8];
+    uint8_t okIndex;
+} __attribute__((packed));
+
+enum PairingType : uint8_t {
+    SCAN_REQUEST = 0x01,
+    DRONE_IDENTITY = 0x02,
+    ILITE_IDENTITY = 0x03,
+    DRONE_ACK = 0x04,
 };
-extern receptionDataPacket reception;
 
-struct emissionDataPacket
-{
-  byte INDEX;
-  byte statusByte;
-  int dataByte[8];
-  byte okIndex;
-};
-extern emissionDataPacket emission;
+struct IdentityMessage {
+    uint8_t type;
+    char identity[16];
+    uint8_t mac[6];
+} __attribute__((packed));
 
-// ESP-NOW callback executed after packet transmission.
-void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status);
+bool init(const char *ssid, const char *password, int tcpPort);
+bool init(const char *ssid, const char *password, int tcpPort, esp_now_recv_cb_t recvCallback);
 
-// ESP-NOW callback executed when data is received.
-void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len);
+bool receiveCommand(ControlPacket &cmd);
+bool paired();
 
-// Populate emission packet with telemetry.
-void packData(byte index);
+void packTelemetry(PacketIndex index, TelemetryPacket &packet);
+bool sendTelemetry(const TelemetryPacket &packet);
+bool sendTelemetry(PacketIndex index);
 
-// Pack telemetry for the given index and transmit via ESP-NOW.
-// Returns true if the packet was queued for sending successfully.
-bool sendData(byte index);
+uint32_t lastCommandTimeMs();
+const uint8_t *controllerMac();
 
-// Process received packets (stub).
-void processData(byte index);
+extern const uint8_t BroadcastMac[6];
+extern TelemetryPacket emission;
+extern uint8_t resendIndex;
 
-// Helper index used for resending data blocks.
-extern byte resendIndex;
+} // namespace Comms
 
-#endif // COMMS_H
