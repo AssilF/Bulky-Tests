@@ -4,8 +4,14 @@
 #include "motion.h"
 #include "sensors.h"
 
-#include <cstring>
 #include <cctype>
+#include <cstring>
+
+#if defined(ESP_PLATFORM)
+#include <esp_idf_version.h>
+#endif
+
+#include <esp_err.h>
 
 extern int operationMode;
 
@@ -210,7 +216,7 @@ namespace {
         g_paired = true;
     }
 
-    void onDataRecvInternal(const uint8_t *mac, const uint8_t *incomingData, int len) {
+    void IRAM_ATTR onDataRecvInternal(const uint8_t *mac, const uint8_t *incomingData, int len) {
         ledcWriteTone(2,380);
         delay(10);
         Serial.println("Recieved something");
@@ -277,6 +283,23 @@ namespace {
         }
     }
 
+#if defined(ESP_IDF_VERSION) && defined(ESP_IDF_VERSION_VAL)
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(4, 3, 0)
+    void IRAM_ATTR onEspNowDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomingData, int len) {
+        const uint8_t *mac = info ? info->src_addr : nullptr;
+        onDataRecvInternal(mac, incomingData, len);
+    }
+#else
+    void IRAM_ATTR onEspNowDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
+        onDataRecvInternal(mac, incomingData, len);
+    }
+#endif
+#else
+    void IRAM_ATTR onEspNowDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
+        onDataRecvInternal(mac, incomingData, len);
+    }
+#endif
+
     bool initInternal(const char *ssid, const char *password, int tcpPort, esp_now_recv_cb_t recvCallback) {
         (void)tcpPort;
         Serial.println("Initialising Comms");
@@ -289,7 +312,18 @@ namespace {
         WiFi.setTxPower(WIFI_POWER_19_5dBm);
             delay(100);
 
-        esp_now_init();
+        if (g_espNowInitialised) {
+            esp_now_register_recv_cb(nullptr);
+            esp_now_deinit();
+            g_espNowInitialised = false;
+            delay(10);
+        }
+
+        esp_err_t initResult = esp_now_init();
+        if (initResult != ESP_OK) {
+            Serial.printf("ESP-NOW init failed: %s (%d)\n", esp_err_to_name(initResult), static_cast<int>(initResult));
+            return false;
+        }
         delay(10);
         g_espNowInitialised = true;
 
@@ -302,7 +336,15 @@ namespace {
         }
 
         g_externalRecvCallback = recvCallback;
-        esp_now_register_recv_cb(&onDataRecvInternal);
+
+        esp_err_t registerResult = esp_now_register_recv_cb(&onEspNowDataRecv);
+        if (registerResult != ESP_OK) {
+            Serial.printf("Failed to register ESP-NOW recv callback: %s (%d)\n", esp_err_to_name(registerResult), static_cast<int>(registerResult));
+            esp_now_deinit();
+            g_espNowInitialised = false;
+            return false;
+        }
+
         delay(10);
         g_paired = false;
         memset(g_controllerMac, 0, sizeof(g_controllerMac));
