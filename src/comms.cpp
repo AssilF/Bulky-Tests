@@ -211,7 +211,9 @@ namespace {
 
     void onDataRecvInternal(const uint8_t *mac, const uint8_t *incomingData, int len) {
         ledcWriteTone(2,380);
+        delay(10);
         Serial.println("Recieved something");
+        delay(10);
         if (mac == nullptr || incomingData == nullptr) {
             return;
         }
@@ -272,21 +274,18 @@ namespace {
 
     bool initInternal(const char *ssid, const char *password, int tcpPort, esp_now_recv_cb_t recvCallback) {
         (void)tcpPort;
-
+        Serial.println("Initialising Comms");
+            delay(10);
         WiFi.mode(WIFI_AP_STA);
-        WiFi.setTxPower(WIFI_POWER_19_5dBm);
+            delay(10);
         WiFi.setSleep(false);
         WiFi.softAP(ssid, password);
+            delay(10);
+        WiFi.setTxPower(WIFI_POWER_19_5dBm);
+            delay(100);
 
-        if (g_espNowInitialised) {
-            esp_now_deinit();
-            g_espNowInitialised = false;
-        }
-
-        if (esp_now_init() != ESP_OK) {
-            return false;
-        }
-
+        esp_now_init();
+        delay(10);
         g_espNowInitialised = true;
 
         esp_now_peer_info_t peerInfo{};
@@ -297,8 +296,8 @@ namespace {
             esp_now_add_peer(&peerInfo);
         }
 
-        esp_now_register_recv_cb(onDataRecvInternal);
-
+        esp_now_register_recv_cb(&onDataRecvInternal);
+        delay(10);
         g_paired = false;
         memset(g_controllerMac, 0, sizeof(g_controllerMac));
         g_lastCommand = ControlPacket{};
@@ -317,10 +316,12 @@ uint8_t resendIndex = 0;
 const uint8_t BroadcastMac[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 
 bool init(const char *ssid, const char *password, int tcpPort) {
+    Serial.println("Initialising Comms with custom recv callback");
     return initInternal(ssid, password, tcpPort, nullptr);
 }
 
 bool init(const char *ssid, const char *password, int tcpPort, esp_now_recv_cb_t recvCallback) {
+    Serial.println("Initialising Comms with custom recv callback");
     return initInternal(ssid, password, tcpPort, recvCallback);
 }
 

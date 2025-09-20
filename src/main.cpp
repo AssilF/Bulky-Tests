@@ -350,7 +350,7 @@ void setup() {
 
   Serial.begin(115200);
   setCpuFrequencyMhz(240);
-  Serial.print("Äbout To commence @ Frequency of : ");
+  Serial.print("About To commence @ Frequency of : ");
   Serial.println(WiFi.macAddress());
   Serial.println(getCpuFrequencyMhz());
   delay(100);
@@ -369,11 +369,12 @@ void setup() {
   if (!Comms::init(WIFI_SSID, WIFI_PASSWORD, 8000)) {
     Serial.println("Failed to initialise communications");
   } else {
+    delay(10);
     Serial.println("Communications initialised");
   }
 
   initOTA();
-
+    delay(10);
 
 
   //Servo/LED PWM BootUP  =============
