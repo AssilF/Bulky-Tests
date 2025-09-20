@@ -38,6 +38,7 @@ class EspNowDiscovery {
   void sendIliteIdentity(const std::array<uint8_t, 6> &mac, const String &droneName);
 
   bool ensurePeer(const std::array<uint8_t, 6> &mac);
+  bool handleIliteMessage(const uint8_t *mac, const uint8_t *data, int len);
 
   Comm::PeerRegistry &registry_;
   std::array<uint8_t, 6> controllerMac_{};

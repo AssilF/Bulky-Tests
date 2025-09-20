@@ -12,6 +12,19 @@ constexpr uint32_t kScanBroadcastIntervalMs = 750;
 constexpr uint32_t kPeerStaleTimeoutMs = 5000;
 EspNowDiscovery *g_instance = nullptr;
 
+constexpr uint8_t kIliteScanRequestType = 0x01;
+constexpr uint8_t kIliteDroneIdentityType = 0x02;
+constexpr uint8_t kIliteControllerIdentityType = 0x03;
+constexpr uint8_t kIliteDroneAckType = 0x04;
+constexpr size_t kIliteIdentityLength = 16;
+constexpr char kIliteControllerIdentity[] = "ILITEA1";
+
+struct IliteIdentityMessage {
+  uint8_t type = 0;
+  char identity[kIliteIdentityLength]{};
+  uint8_t mac[6]{};
+} __attribute__((packed));
+
 std::array<uint8_t, 6> broadcastAddress() {
   return {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 }
@@ -19,6 +32,20 @@ std::array<uint8_t, 6> broadcastAddress() {
 String macToString(const uint8_t *mac) {
   char buffer[18];
   snprintf(buffer, sizeof(buffer), "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  return String(buffer);
+}
+
+String iliteIdentityToString(const char *rawIdentity) {
+  size_t length = 0;
+  while (length < kIliteIdentityLength && rawIdentity[length] != '\0') {
+    ++length;
+  }
+
+  char buffer[kIliteIdentityLength + 1]{};
+  if (length > 0) {
+    memcpy(buffer, rawIdentity, length);
+  }
+  buffer[length] = '\0';
   return String(buffer);
 }
 
@@ -170,6 +197,10 @@ void EspNowDiscovery::taskLoop() {
 }
 
 void EspNowDiscovery::handleIncoming(const uint8_t *mac, const uint8_t *data, int len) {
+  if (handleIliteMessage(mac, data, len)) {
+    return;
+  }
+
   if (len < static_cast<int>(sizeof(Comm::PacketHeader))) {
     return;
   }
@@ -247,9 +278,29 @@ void EspNowDiscovery::sendScanRequest() {
     Serial.print("[ESP-NOW] Scan request failed: ");
     Serial.println(status);
   }
+
+  IliteIdentityMessage iliteRequest;
+  iliteRequest.type = kIliteScanRequestType;
+  memcpy(iliteRequest.mac, controllerMac_.data(), controllerMac_.size());
+  status = esp_now_send(broadcast.data(), reinterpret_cast<uint8_t *>(&iliteRequest), sizeof(iliteRequest));
+  if (status != ESP_OK) {
+    Serial.print("[ESP-NOW] ILITE scan request failed: ");
+    Serial.println(status);
+  }
 }
 
 void EspNowDiscovery::sendIliteIdentity(const std::array<uint8_t, 6> &mac, const String &droneName) {
+  IliteIdentityMessage iliteIdentity;
+  iliteIdentity.type = kIliteControllerIdentityType;
+  strlcpy(iliteIdentity.identity, kIliteControllerIdentity, sizeof(iliteIdentity.identity));
+  memcpy(iliteIdentity.mac, controllerMac_.data(), controllerMac_.size());
+
+  esp_err_t status = esp_now_send(mac.data(), reinterpret_cast<uint8_t *>(&iliteIdentity), sizeof(iliteIdentity));
+  if (status != ESP_OK) {
+    Serial.print("[ESP-NOW] Failed to send ILITE identity to ");
+    Serial.println(droneName);
+  }
+
   Comm::DiscoveryPacket packet;
   packet.header.magic = Comm::kPacketMagic;
   packet.header.version = Comm::kProtocolVersion;
@@ -258,7 +309,7 @@ void EspNowDiscovery::sendIliteIdentity(const std::array<uint8_t, 6> &mac, const
   strlcpy(packet.name, "ILITEA1", sizeof(packet.name));
   strlcpy(packet.platform, "Controller", sizeof(packet.platform));
 
-  esp_err_t status = esp_now_send(mac.data(), reinterpret_cast<uint8_t *>(&packet), sizeof(packet));
+  status = esp_now_send(mac.data(), reinterpret_cast<uint8_t *>(&packet), sizeof(packet));
   if (status != ESP_OK) {
     Serial.print("[ESP-NOW] Failed to send ILITE identity to ");
     Serial.println(droneName);
@@ -283,4 +334,83 @@ bool EspNowDiscovery::ensurePeer(const std::array<uint8_t, 6> &mac) {
     return false;
   }
   return true;
+}
+
+bool EspNowDiscovery::handleIliteMessage(const uint8_t *mac, const uint8_t *data, int len) {
+  if (len < static_cast<int>(sizeof(IliteIdentityMessage))) {
+    return false;
+  }
+
+  auto broadcast = broadcastAddress();
+  if (memcmp(mac, broadcast.data(), broadcast.size()) == 0) {
+    return false;
+  }
+  if (memcmp(mac, controllerMac_.data(), controllerMac_.size()) == 0) {
+    return false;
+  }
+
+  IliteIdentityMessage message{};
+  size_t copySize = std::min(static_cast<size_t>(len), sizeof(message));
+  memcpy(&message, data, copySize);
+
+  if (message.type != kIliteDroneIdentityType && message.type != kIliteDroneAckType) {
+    return false;
+  }
+
+  std::array<uint8_t, 6> droneMac{};
+  memcpy(droneMac.data(), message.mac, droneMac.size());
+  bool macPopulated = false;
+  for (auto byte : droneMac) {
+    if (byte != 0) {
+      macPopulated = true;
+      break;
+    }
+  }
+  if (!macPopulated) {
+    memcpy(droneMac.data(), mac, droneMac.size());
+  }
+
+  if (message.type == kIliteDroneIdentityType) {
+    Comm::PeerInfo peer;
+    peer.mac = droneMac;
+    peer.name = iliteIdentityToString(message.identity);
+    peer.platform = String("ILITE");
+    peer.lastSeenMs = millis();
+    peer.acknowledged = false;
+    registry_.upsertPeer(peer, false);
+
+    if (ensurePeer(droneMac)) {
+      sendIliteIdentity(droneMac, peer.name);
+    }
+    return true;
+  }
+
+  if (message.type == kIliteDroneAckType) {
+    Comm::PeerInfo peer;
+    peer.mac = droneMac;
+    peer.lastSeenMs = millis();
+    peer.acknowledged = true;
+    peer.platform = String("ILITE");
+
+    auto existing = registry_.getPeer(droneMac);
+    if (existing.has_value()) {
+      peer.name = existing->name;
+      peer.platform = existing->platform;
+    }
+    if (message.identity[0] != '\0') {
+      peer.name = iliteIdentityToString(message.identity);
+    }
+    if (peer.platform.length() == 0) {
+      peer.platform = String("ILITE");
+    }
+
+    registry_.upsertPeer(peer, true);
+    bool peerReady = ensurePeer(droneMac);
+    if (peerReady && !hasTarget_) {
+      setTarget(droneMac);
+    }
+    return true;
+  }
+
+  return false;
 }
