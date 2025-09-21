@@ -3,6 +3,9 @@
 #include <WiFi.h>
 #include <ArduinoOTA.h>
 #include <Adafruit_PWMServoDriver.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#include <freertos/task.h>
 
 #include <U8g2lib.h>
 
@@ -128,10 +131,22 @@ int operationMode;
 #define calibrationMode 6
 #define visionDrivenMode 7
 
-ControlState controlState;
+ControlState controlState{};
+StaticSemaphore_t controlStateMutexBuffer;
+SemaphoreHandle_t controlStateMutex = nullptr;
+TaskHandle_t sensorTaskHandle = nullptr;
+TaskHandle_t controlTaskHandle = nullptr;
+TaskHandle_t actuatorTaskHandle = nullptr;
+TaskHandle_t uiTaskHandle = nullptr;
+
 void resetControlState();
 void updateControlFromComms();
-void updateBuzzerOutput();
+ControlState getControlStateSnapshot();
+void updateBuzzerOutput(const ControlState &state);
+void sensorTask(void *param);
+void controlTask(void *param);
+void actuatorTask(void *param);
+void uiTask(void *param);
 
 Comm::PeerRegistry peerRegistry;
 EspNowDiscovery discovery(peerRegistry);
@@ -147,6 +162,9 @@ String linkStateToString(Comm::LinkState state);
 
 void resetControlState()
 {
+  if (controlStateMutex != nullptr) {
+    xSemaphoreTake(controlStateMutex, portMAX_DELAY);
+  }
   controlState.motion = STOP;
   controlState.speed = 0;
   controlState.pump = false;
@@ -160,37 +178,73 @@ void resetControlState()
   controlState.linkReady = false;
   controlState.targetMac.fill(0);
   controlState.lastTelemetryMs = 0;
+  if (controlStateMutex != nullptr) {
+    xSemaphoreGive(controlStateMutex);
+  }
+}
+
+ControlState getControlStateSnapshot()
+{
+  ControlState snapshot{};
+  if (controlStateMutex != nullptr) {
+    if (xSemaphoreTake(controlStateMutex, portMAX_DELAY) == pdTRUE) {
+      snapshot = controlState;
+      xSemaphoreGive(controlStateMutex);
+    }
+  } else {
+    snapshot = controlState;
+  }
+  return snapshot;
 }
 
 void updateControlFromComms()
 {
-  controlState.linkReady = peerRegistry.hasTarget();
-  if (controlState.linkReady) {
-    auto mac = peerRegistry.getTarget();
-    if (mac.has_value()) {
-      controlState.targetMac = mac.value();
+  ControlState snapshot{};
+  if (controlStateMutex != nullptr) {
+    if (xSemaphoreTake(controlStateMutex, portMAX_DELAY) == pdTRUE) {
+      controlState.linkReady = peerRegistry.hasTarget();
+      if (controlState.linkReady) {
+        auto mac = peerRegistry.getTarget();
+        if (mac.has_value()) {
+          controlState.targetMac = mac.value();
+        }
+      } else {
+        controlState.targetMac.fill(0);
+      }
+
+      controlState.lastTelemetryMs = peerRegistry.lastTelemetryMs();
+      snapshot = controlState;
+      xSemaphoreGive(controlStateMutex);
     }
   } else {
-    controlState.targetMac.fill(0);
+    controlState.linkReady = peerRegistry.hasTarget();
+    if (controlState.linkReady) {
+      auto mac = peerRegistry.getTarget();
+      if (mac.has_value()) {
+        controlState.targetMac = mac.value();
+      }
+    } else {
+      controlState.targetMac.fill(0);
+    }
+    controlState.lastTelemetryMs = peerRegistry.lastTelemetryMs();
+    snapshot = controlState;
   }
 
-  controlState.lastTelemetryMs = peerRegistry.lastTelemetryMs();
-
-  if (controlState.linkReady) {
-    Comm::ControlPacket packet = buildControlPacket(controlState);
+  if (snapshot.linkReady) {
+    Comm::ControlPacket packet = buildControlPacket(snapshot);
     if (!discovery.sendControl(packet)) {
       Serial.println("[COMM] Failed to send control packet");
     }
   }
 }
 
-void updateBuzzerOutput()
+void updateBuzzerOutput(const ControlState &state)
 {
   if (audioFeedback.isActive()) {
     return;
   }
 
-  if (controlState.buzzer) {
+  if (state.buzzer) {
     sound(1300);
   } else {
     sound(0);
@@ -279,7 +333,13 @@ void processPeerEvents() {
         Serial.println("[COMM] Target cleared");
         break;
       case Comm::PeerEvent::Type::TelemetryReceived:
-        controlState.lastTelemetryMs = peerRegistry.lastTelemetryMs();
+        if (controlStateMutex != nullptr &&
+            xSemaphoreTake(controlStateMutex, portMAX_DELAY) == pdTRUE) {
+          controlState.lastTelemetryMs = peerRegistry.lastTelemetryMs();
+          xSemaphoreGive(controlStateMutex);
+        } else {
+          controlState.lastTelemetryMs = peerRegistry.lastTelemetryMs();
+        }
         break;
       case Comm::PeerEvent::Type::TelemetryTimeout:
         audioFeedback.playPattern(AudioFeedback::Pattern::TelemetryTimeout);
@@ -299,6 +359,7 @@ void drawPeerUi(uint32_t nowMs) {
   lastUiRenderMs = nowMs;
   uiDirty = false;
 
+  ControlState state = getControlStateSnapshot();
   auto peers = peerRegistry.peers();
   u8g2.clearBuffer();
   u8g2.setFont(u8g2_font_6x10_tf);
@@ -307,7 +368,7 @@ void drawPeerUi(uint32_t nowMs) {
 
   for (size_t i = 0; i < peers.size() && i < 4; ++i) {
     const auto &peer = peers[i];
-    bool isTarget = controlState.linkReady && controlState.targetMac == peer.mac;
+    bool isTarget = state.linkReady && state.targetMac == peer.mac;
     u8g2.setCursor(0, 22 + static_cast<uint8_t>(i) * 10);
     String label = peer.name.length() > 0 ? peer.name : formatMac(peer.mac);
     if (label.length() > 14) {
@@ -325,17 +386,17 @@ void drawPeerUi(uint32_t nowMs) {
   u8g2.setCursor(0, 54);
   u8g2.print("Link: ");
   u8g2.print(linkStateToString(peerRegistry.getLinkState()));
-  if (controlState.linkReady) {
-    uint32_t ageMs = nowMs - controlState.lastTelemetryMs;
+  if (state.linkReady) {
+    uint32_t ageMs = nowMs - state.lastTelemetryMs;
     u8g2.print(" ");
     u8g2.print(ageMs / 1000.0f, 1);
     u8g2.print("s");
   }
 
-  if (controlState.linkReady) {
+  if (state.linkReady) {
     u8g2.setCursor(0, 64);
     u8g2.print("Target: ");
-    u8g2.print(formatMac(controlState.targetMac));
+    u8g2.print(formatMac(state.targetMac));
   }
 
   u8g2.sendBuffer();
@@ -399,6 +460,12 @@ void setup() {
   Serial.println(getCpuFrequencyMhz());
   delay(100);
 
+  controlStateMutex = xSemaphoreCreateMutexStatic(&controlStateMutexBuffer);
+  if (controlStateMutex == nullptr) {
+    Serial.println("[SYS] Failed to allocate control state mutex");
+  }
+  resetControlState();
+
   ShiftPWM_Handle = timerBegin(0, 240, true);
   timerAttachInterrupt(ShiftPWM_Handle, &ShiftPWM, true);
   timerAlarmWrite(ShiftPWM_Handle, 3, true);
@@ -408,8 +475,6 @@ void setup() {
   timerAttachInterrupt(SpeedRetrieval_Handle, &retreiveSpeeds, true);
   timerAlarmWrite(SpeedRetrieval_Handle, 100000, true); //let's take a speed sample each 76ms maybe ? seems like a good compromise instinctively or something.
   timerAlarmEnable(SpeedRetrieval_Handle);
-
-  resetControlState();
   Serial.println("Initializing wireless communications");
 
 
@@ -465,6 +530,23 @@ void setup() {
 
   uiDirty = true;
   processPeerEvents();
+
+  if (xTaskCreatePinnedToCore(sensorTask, "sensor-task", 4096, nullptr, 3,
+                              &sensorTaskHandle, 0) != pdPASS) {
+    Serial.println("[SYS] Failed to start sensor task");
+  }
+  if (xTaskCreatePinnedToCore(controlTask, "control-task", 6144, nullptr, 4,
+                              &controlTaskHandle, 1) != pdPASS) {
+    Serial.println("[SYS] Failed to start control task");
+  }
+  if (xTaskCreatePinnedToCore(actuatorTask, "actuator-task", 4096, nullptr, 3,
+                              &actuatorTaskHandle, 1) != pdPASS) {
+    Serial.println("[SYS] Failed to start actuator task");
+  }
+  if (xTaskCreatePinnedToCore(uiTask, "ui-task", 4096, nullptr, 2,
+                              &uiTaskHandle, 0) != pdPASS) {
+    Serial.println("[SYS] Failed to start UI task");
+  }
 }
 
 
@@ -479,32 +561,62 @@ double lastLineError;
 double currentLineError;
 
 void loop() {
-  uint32_t now = millis();
-  ArduinoOTA.handle();
-  processPeerEvents();
-  audioFeedback.loop(now);
+  vTaskDelay(pdMS_TO_TICKS(100));
+}
 
-  sense(); //nothing shall be freezing, instead, work with instances and ticks and polling.
-  getDistances();
-  processBattery();
-  processIRImissions();
-  lineMode=0;
-  processLine();
-  updateControlFromComms();
-  drawPeerUi(now);
-  projectMotion(controlState.motion, controlState.speed);
-  if(controlState.pump){pump(4096);} else{pump(0);}
-  if(controlState.flash){flash(4096);} else{flash(0);}
-  updateBuzzerOutput();
-  if(controlState.cameraMode)
-  {
-    camYaw(map(controlState.cameraYaw,0,180,0,90));
-    camPitch(map(controlState.cameraPitch,0,180,0,90));
+void sensorTask(void *param)
+{
+  (void)param;
+  TickType_t lastWake = xTaskGetTickCount();
+  for (;;) {
+    sense();
+    getDistances();
+    processBattery();
+    processIRImissions();
+    lineMode = 0;
+    processLine();
+    vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(5));
   }
-  else
-  {
-    craneOffset(controlState.craneYaw);
-    craneDeploy(controlState.cranePitch);
-  }
+}
 
+void controlTask(void *param)
+{
+  (void)param;
+  for (;;) {
+    uint32_t now = millis();
+    ArduinoOTA.handle();
+    processPeerEvents();
+    audioFeedback.loop(now);
+    updateControlFromComms();
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+}
+
+void actuatorTask(void *param)
+{
+  (void)param;
+  for (;;) {
+    ControlState state = getControlStateSnapshot();
+    projectMotion(state.motion, state.speed);
+    pump(state.pump ? 4096 : 0);
+    flash(state.flash ? 4096 : 0);
+    updateBuzzerOutput(state);
+    if (state.cameraMode) {
+      camYaw(map(state.cameraYaw, 0, 180, 0, 90));
+      camPitch(map(state.cameraPitch, 0, 180, 0, 90));
+    } else {
+      craneOffset(state.craneYaw);
+      craneDeploy(state.cranePitch);
+    }
+    vTaskDelay(pdMS_TO_TICKS(20));
+  }
+}
+
+void uiTask(void *param)
+{
+  (void)param;
+  for (;;) {
+    drawPeerUi(millis());
+    vTaskDelay(pdMS_TO_TICKS(100));
+  }
 }

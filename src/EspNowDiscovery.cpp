@@ -63,6 +63,14 @@ bool EspNowDiscovery::begin() {
   }
   WiFi.softAPsetHostname("Bulky");
 
+  esp_err_t txPowerResult = esp_wifi_set_max_tx_power(84);
+  if (txPowerResult != ESP_OK) {
+    Serial.print("[ESP-NOW] Failed to set max TX power: ");
+    Serial.println(txPowerResult);
+  } else if (!WiFi.setTxPower(WIFI_POWER_19_5dBm)) {
+    Serial.println("[ESP-NOW] Failed to set WiFi TX power level");
+  }
+
   WiFi.macAddress(localMac_.data());
   bool macValid = false;
   for (auto byte : localMac_) {

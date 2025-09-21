@@ -23,5 +23,6 @@ extern ControlState controlState;
 
 void resetControlState();
 void updateControlFromComms();
-void updateBuzzerOutput();
+ControlState getControlStateSnapshot();
+void updateBuzzerOutput(const ControlState &state);
 void action();
