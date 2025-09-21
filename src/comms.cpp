@@ -1,91 +1,68 @@
 #include "comms.h"
-#include <cstring>
+
+#include <Arduino.h>
+#include <WiFi.h>
+
+namespace {
+WiFiServer *g_server = nullptr;
+WiFiClient g_client;
+bool g_running = false;
+}
 
 namespace Comms {
-static bool g_paired = false;
-static ThrustCommand lastCmd = {0};
-static uint8_t controllerMac[6] = {0};
-const uint8_t BroadcastMac[6] = {0xff,0xff,0xff,0xff,0xff,0xff};
-
-static void onDataRecv(const uint8_t* mac, const uint8_t* incomingData, int len) {
-    Serial.println("Recieved");
-    if (len == sizeof(IdentityMessage) && !g_paired) {
-        const IdentityMessage* msg = reinterpret_cast<const IdentityMessage*>(incomingData);
-        if (msg->type == SCAN_REQUEST) {
-            IdentityMessage resp{};
-            resp.type = DRONE_IDENTITY;
-            strncpy(resp.identity, "BULKYBOT", sizeof(resp.identity));
-            WiFi.macAddress(resp.mac);
-            esp_now_send(mac, reinterpret_cast<const uint8_t*>(&resp), sizeof(resp));
-            Serial.println("sent");
-            return;
-        } else if (msg->type == ILITE_IDENTITY) {
-            memcpy(controllerMac, mac, 6);
-            if (!esp_now_is_peer_exist(mac)) {
-                esp_now_peer_info_t peerInfo{};
-                memcpy(peerInfo.peer_addr, mac, 6);
-                peerInfo.channel = 0;
-                peerInfo.encrypt = false;
-                esp_now_add_peer(&peerInfo);
-            }
-            IdentityMessage ack{};
-            ack.type = DRONE_ACK;
-            strncpy(ack.identity, "BULKYBOT", sizeof(ack.identity));
-            esp_now_send(mac, reinterpret_cast<const uint8_t*>(&ack), sizeof(ack));
-            Serial.println("sent2");
-            g_paired = true;
-            return;
-        }
-    }
-    if (len == sizeof(ThrustCommand)) {
-        const ThrustCommand* cmd = reinterpret_cast<const ThrustCommand*>(incomingData);
-        lastCmd = *cmd;
-        return;
-    }
-}
-
-static bool initInternal(const char *ssid, const char *password, int tcpPort, esp_now_recv_cb_t recvCallback) {
-    (void)tcpPort;
-    // Run in AP+STA mode so ESP-NOW remains operational alongside SoftAP
-    WiFi.mode(WIFI_AP_STA);
-    WiFi.setTxPower(WIFI_POWER_18_5dBm);
-    WiFi.setSleep(false);
-    WiFi.softAP(ssid, password);
-
-    if (esp_now_init() != ESP_OK) {
-        return false;
-    }
-
-    esp_now_peer_info_t peerInfo{};
-    memcpy(peerInfo.peer_addr, BroadcastMac, 6);
-    peerInfo.channel = 0;
-    peerInfo.encrypt = false;
-    if (!esp_now_is_peer_exist(BroadcastMac)) {
-        esp_now_add_peer(&peerInfo);
-    }
-
-    esp_now_register_recv_cb(recvCallback ? recvCallback : onDataRecv);
-
-    g_paired = false;
-    memset(controllerMac, 0, sizeof(controllerMac));
-    memset(&lastCmd, 0, sizeof(lastCmd));
-    return true;
-}
 
 bool init(const char *ssid, const char *password, int tcpPort) {
-    return initInternal(ssid, password, tcpPort, nullptr);
+  g_client.stop();
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.setSleep(false);
+  WiFi.setTxPower(WIFI_POWER_18_5dBm);
+  if (!WiFi.softAP(ssid, password)) {
+    g_server = nullptr;
+    g_running = false;
+    return false;
+  }
+
+  static WiFiServer server(tcpPort);
+  g_server = &server;
+  g_server->begin();
+  g_server->setNoDelay(true);
+  g_running = true;
+  return true;
 }
 
-bool init(const char *ssid, const char *password, int tcpPort, esp_now_recv_cb_t recvCallback) {
-    return initInternal(ssid, password, tcpPort, recvCallback);
+void loop() {
+  if (!g_running || g_server == nullptr) {
+    return;
+  }
+
+  if (!g_client || !g_client.connected()) {
+    WiFiClient next = g_server->available();
+    if (next) {
+      if (g_client) {
+        g_client.stop();
+      }
+      g_client = next;
+      Serial.println("[COMMS] TCP client connected");
+    }
+  }
+
+  if (!g_client || !g_client.connected()) {
+    return;
+  }
+
+  while (g_client.available()) {
+    uint8_t buffer[128];
+    size_t toRead = g_client.available();
+    if (toRead > sizeof(buffer)) {
+      toRead = sizeof(buffer);
+    }
+    size_t len = g_client.read(buffer, toRead);
+    if (len == 0) {
+      break;
+    }
+    g_client.write(buffer, len);
+    g_client.flush();
+  }
 }
 
-bool receiveCommand(ThrustCommand &cmd) {
-    cmd = lastCmd;
-    return g_paired;
-}
-
-bool paired() {
-    return g_paired;
-}
 }
