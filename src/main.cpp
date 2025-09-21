@@ -270,9 +270,14 @@ Comm::ControlPacket buildControlPacket(const ControlState &state) {
 }
 
 String formatMac(const std::array<uint8_t, 6> &mac) {
-  char buffer[18];
-  snprintf(buffer, sizeof(buffer), "%02X:%02X:%02X:%02X:%02X:%02X",
-           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  char buffer[18]{};
+  int written = snprintf(buffer, sizeof(buffer), "%02X:%02X:%02X:%02X:%02X:%02X",
+                         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  if (written < 0) {
+    buffer[0] = '\0';
+  } else if (written >= static_cast<int>(sizeof(buffer))) {
+    buffer[sizeof(buffer) - 1] = '\0';
+  }
   return String(buffer);
 }
 
@@ -567,6 +572,7 @@ void loop() {
 void sensorTask(void *param)
 {
   (void)param;
+  const TickType_t period = pdMS_TO_TICKS(5);
   TickType_t lastWake = xTaskGetTickCount();
   for (;;) {
     sense();
@@ -575,7 +581,15 @@ void sensorTask(void *param)
     processIRImissions();
     lineMode = 0;
     processLine();
-    vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(5));
+
+    TickType_t now = xTaskGetTickCount();
+    TickType_t elapsed = now - lastWake;
+    if (elapsed < period) {
+      vTaskDelayUntil(&lastWake, period);
+    } else {
+      lastWake = now;
+      vTaskDelay(pdMS_TO_TICKS(1));
+    }
   }
 }
 
