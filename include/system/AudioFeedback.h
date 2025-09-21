@@ -1,8 +1,10 @@
 #pragma once
 
 #include <Arduino.h>
+#include <cstddef>
 #include <functional>
-#include <queue>
+#include <freertos/FreeRTOS.h>
+#include <freertos/portmacro.h>
 
 class AudioFeedback {
  public:
@@ -23,18 +25,26 @@ class AudioFeedback {
   };
 
   explicit AudioFeedback(std::function<void(uint16_t)> toneWriter);
+  AudioFeedback(const AudioFeedback &) = delete;
+  AudioFeedback &operator=(const AudioFeedback &) = delete;
 
   void playPattern(Pattern pattern);
   void loop(uint32_t nowMs);
   void stop();
-  bool isActive() const { return hasActiveSegment_ || !queue_.empty(); }
+  bool isActive() const;
 
  private:
+  static constexpr size_t kQueueCapacity = 16;
+
   void enqueuePattern(Pattern pattern);
   void startNextSegment(uint32_t nowMs);
 
   std::function<void(uint16_t)> toneWriter_;
-  std::queue<Segment> queue_;
+  Segment queueBuffer_[kQueueCapacity] = {};
+  size_t queueHead_ = 0;
+  size_t queueTail_ = 0;
+  size_t queueSize_ = 0;
+  mutable portMUX_TYPE lock_ = portMUX_INITIALIZER_UNLOCKED;
   bool hasActiveSegment_ = false;
   bool inPause_ = false;
   Segment activeSegment_{};
