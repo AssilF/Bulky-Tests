@@ -317,37 +317,94 @@ bool EspNowDiscovery::ensurePeer(const std::array<uint8_t, 6> &mac) {
 }
 
 bool EspNowDiscovery::handleIliteMessage(const uint8_t *mac, const uint8_t *data, int len) {
-  if (len < static_cast<int>(sizeof(IliteIdentityMessage))) {
+  if (len <= 0) {
     return false;
   }
 
-  auto broadcast = broadcastAddress();
-  if (memcmp(mac, broadcast.data(), broadcast.size()) == 0) {
-    return false;
+  uint8_t messageType = data[0];
+  switch (messageType) {
+    case kIliteScanRequestType:
+    case kIliteDroneIdentityType:
+    case kIliteControllerIdentityType:
+    case kIliteDroneAckType:
+      break;
+    default:
+      return false;
   }
+
+  auto broadcast = broadcastAddress();
+  bool isBroadcastMac = memcmp(mac, broadcast.data(), broadcast.size()) == 0;
   if (memcmp(mac, localMac_.data(), localMac_.size()) == 0) {
     return false;
   }
 
   IliteIdentityMessage message{};
-  size_t copySize = std::min(static_cast<size_t>(len), sizeof(message));
-  memcpy(&message, data, copySize);
+  message.type = messageType;
+
+  size_t payloadLen = static_cast<size_t>(len) - 1;
+  bool macIncluded = payloadLen >= sizeof(message.mac);
+  size_t identityBytes = payloadLen - (macIncluded ? sizeof(message.mac) : 0);
+  identityBytes = std::min(identityBytes, sizeof(message.identity));
+
+  if (identityBytes > 0) {
+    memcpy(message.identity, data + 1, identityBytes);
+  }
+  if (macIncluded) {
+    memcpy(message.mac, data + (len - sizeof(message.mac)), sizeof(message.mac));
+  }
 
   std::array<uint8_t, 6> iliteMac{};
   bool macProvided = false;
-  for (size_t i = 0; i < iliteMac.size(); ++i) {
-    iliteMac[i] = message.mac[i];
-    if (message.mac[i] != 0) {
-      macProvided = true;
+  if (macIncluded) {
+    for (size_t i = 0; i < iliteMac.size(); ++i) {
+      iliteMac[i] = message.mac[i];
+      if (message.mac[i] != 0) {
+        macProvided = true;
+      }
     }
   }
   if (!macProvided) {
+    if (isBroadcastMac) {
+      return false;
+    }
     memcpy(iliteMac.data(), mac, iliteMac.size());
   }
 
   switch (message.type) {
-    case kIliteScanRequestType:
-      return false;
+    case kIliteScanRequestType: {
+      if (macProvided) {
+        Comm::PeerInfo peer;
+        peer.mac = iliteMac;
+        peer.name = iliteIdentityToString(message.identity);
+        if (peer.name.length() == 0) {
+          peer.name = String("ILITE");
+        }
+        peer.platform = String("ILITE");
+        peer.lastSeenMs = millis();
+        peer.acknowledged = false;
+
+        auto existing = registry_.getPeer(iliteMac);
+        if (existing.has_value()) {
+          if (existing->name.length() > 0) {
+            peer.name = existing->name;
+          }
+          if (existing->platform.length() > 0) {
+            peer.platform = existing->platform;
+          }
+        }
+
+        registry_.upsertPeer(peer, false);
+
+        if (ensurePeer(iliteMac)) {
+          String droneName = peer.name;
+          if (droneName.length() == 0) {
+            droneName = macToString(iliteMac.data());
+          }
+          sendIliteIdentity(iliteMac, droneName);
+        }
+      }
+      return true;
+    }
     case kIliteDroneIdentityType: {
       Comm::PeerInfo peer;
       peer.mac = iliteMac;
