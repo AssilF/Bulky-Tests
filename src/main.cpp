@@ -13,10 +13,7 @@
 #include "motion.h"
 #include "line.h"
 #include "main.h"
-#include "BulkyPackets.h"
-#include "PeerRegistry.h"
 #include "system/AudioFeedback.h"
-#include "EspNowDiscovery.h"
 
 U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0);
 //this is the13th of october, my laptop apparently cannot even keep up with my rate of writing :D:D:D:
@@ -140,7 +137,6 @@ TaskHandle_t actuatorTaskHandle = nullptr;
 TaskHandle_t uiTaskHandle = nullptr;
 
 void resetControlState();
-void updateControlFromComms();
 ControlState getControlStateSnapshot();
 void updateBuzzerOutput(const ControlState &state);
 void sensorTask(void *param);
@@ -148,17 +144,8 @@ void controlTask(void *param);
 void actuatorTask(void *param);
 void uiTask(void *param);
 
-Comm::PeerRegistry peerRegistry;
-EspNowDiscovery discovery(peerRegistry);
 AudioFeedback audioFeedback([](uint16_t frequency) { ledcWriteTone(2, frequency); });
-bool uiDirty = true;
-uint32_t lastUiRenderMs = 0;
-
-Comm::ControlPacket buildControlPacket(const ControlState &state);
-void processPeerEvents();
-void drawPeerUi(uint32_t nowMs);
-String formatMac(const std::array<uint8_t, 6> &mac);
-String linkStateToString(Comm::LinkState state);
+void drawStatusUi(uint32_t nowMs);
 
 void resetControlState()
 {
@@ -175,9 +162,6 @@ void resetControlState()
   controlState.cameraPitch = 90;
   controlState.craneYaw = 90;
   controlState.cranePitch = 0;
-  controlState.linkReady = false;
-  controlState.targetMac.fill(0);
-  controlState.lastTelemetryMs = 0;
   if (controlStateMutex != nullptr) {
     xSemaphoreGive(controlStateMutex);
   }
@@ -197,47 +181,6 @@ ControlState getControlStateSnapshot()
   return snapshot;
 }
 
-void updateControlFromComms()
-{
-  ControlState snapshot{};
-  if (controlStateMutex != nullptr) {
-    if (xSemaphoreTake(controlStateMutex, portMAX_DELAY) == pdTRUE) {
-      controlState.linkReady = peerRegistry.hasTarget();
-      if (controlState.linkReady) {
-        auto mac = peerRegistry.getTarget();
-        if (mac.has_value()) {
-          controlState.targetMac = mac.value();
-        }
-      } else {
-        controlState.targetMac.fill(0);
-      }
-
-      controlState.lastTelemetryMs = peerRegistry.lastTelemetryMs();
-      snapshot = controlState;
-      xSemaphoreGive(controlStateMutex);
-    }
-  } else {
-    controlState.linkReady = peerRegistry.hasTarget();
-    if (controlState.linkReady) {
-      auto mac = peerRegistry.getTarget();
-      if (mac.has_value()) {
-        controlState.targetMac = mac.value();
-      }
-    } else {
-      controlState.targetMac.fill(0);
-    }
-    controlState.lastTelemetryMs = peerRegistry.lastTelemetryMs();
-    snapshot = controlState;
-  }
-
-  if (snapshot.linkReady) {
-    Comm::ControlPacket packet = buildControlPacket(snapshot);
-    if (!discovery.sendControl(packet)) {
-      Serial.println("[COMM] Failed to send control packet");
-    }
-  }
-}
-
 void updateBuzzerOutput(const ControlState &state)
 {
   if (audioFeedback.isActive()) {
@@ -251,157 +194,49 @@ void updateBuzzerOutput(const ControlState &state)
   }
 }
 
-Comm::ControlPacket buildControlPacket(const ControlState &state) {
-  Comm::ControlPacket packet;
-  packet.header.magic = Comm::kPacketMagic;
-  packet.header.version = Comm::kProtocolVersion;
-  packet.header.type = Comm::MessageType::Control;
-  packet.payload = Comm::encodeControlPayload(state.motion,
-                                              state.speed,
-                                              state.pump,
-                                              state.flash,
-                                              state.buzzer,
-                                              state.cameraMode,
-                                              state.cameraYaw,
-                                              state.cameraPitch,
-                                              state.craneYaw,
-                                              state.cranePitch);
-  return packet;
-}
-
-String formatMac(const std::array<uint8_t, 6> &mac) {
-  char buffer[18]{};
-  int written = snprintf(buffer, sizeof(buffer), "%02X:%02X:%02X:%02X:%02X:%02X",
-                         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-  if (written < 0) {
-    buffer[0] = '\0';
-  } else if (written >= static_cast<int>(sizeof(buffer))) {
-    buffer[sizeof(buffer) - 1] = '\0';
-  }
-  return String(buffer);
-}
-
-String linkStateToString(Comm::LinkState state) {
-  switch (state) {
-    case Comm::LinkState::Idle:
-      return "Idle";
-    case Comm::LinkState::Scanning:
-      return "Scanning";
-    case Comm::LinkState::Paired:
-      return "Paired";
-    case Comm::LinkState::Lost:
-      return "Lost";
-  }
-  return "Unknown";
-}
-
-void processPeerEvents() {
-  Comm::PeerEvent event;
-  bool dirty = false;
-  while (peerRegistry.popEvent(event)) {
-    dirty = true;
-    switch (event.type) {
-      case Comm::PeerEvent::Type::ScanStarted:
-        audioFeedback.playPattern(AudioFeedback::Pattern::ScanStart);
-        Serial.println("[COMM] Scan started");
-        break;
-      case Comm::PeerEvent::Type::ScanStopped:
-        audioFeedback.playPattern(AudioFeedback::Pattern::ScanStop);
-        Serial.println("[COMM] Scan stopped");
-        break;
-      case Comm::PeerEvent::Type::PeerFound:
-        audioFeedback.playPattern(AudioFeedback::Pattern::PeerFound);
-        Serial.print("[COMM] Peer found: ");
-        Serial.println(event.peer.name);
-        break;
-      case Comm::PeerEvent::Type::PeerUpdated:
-        Serial.print("[COMM] Peer updated: ");
-        Serial.println(event.peer.name);
-        break;
-      case Comm::PeerEvent::Type::PeerLost:
-        audioFeedback.playPattern(AudioFeedback::Pattern::TargetCleared);
-        Serial.print("[COMM] Peer lost: ");
-        Serial.println(event.peer.name);
-        break;
-      case Comm::PeerEvent::Type::PeerAcked:
-        audioFeedback.playPattern(AudioFeedback::Pattern::PeerAck);
-        Serial.print("[COMM] Peer acknowledged: ");
-        Serial.println(event.peer.name);
-        break;
-      case Comm::PeerEvent::Type::TargetSelected:
-        audioFeedback.playPattern(AudioFeedback::Pattern::TargetSelected);
-        Serial.print("[COMM] Target selected: ");
-        Serial.println(event.peer.name);
-        break;
-      case Comm::PeerEvent::Type::TargetCleared:
-        audioFeedback.playPattern(AudioFeedback::Pattern::TargetCleared);
-        Serial.println("[COMM] Target cleared");
-        break;
-      case Comm::PeerEvent::Type::TelemetryReceived:
-        if (controlStateMutex != nullptr &&
-            xSemaphoreTake(controlStateMutex, portMAX_DELAY) == pdTRUE) {
-          controlState.lastTelemetryMs = peerRegistry.lastTelemetryMs();
-          xSemaphoreGive(controlStateMutex);
-        } else {
-          controlState.lastTelemetryMs = peerRegistry.lastTelemetryMs();
-        }
-        break;
-      case Comm::PeerEvent::Type::TelemetryTimeout:
-        audioFeedback.playPattern(AudioFeedback::Pattern::TelemetryTimeout);
-        Serial.println("[COMM] Telemetry timeout");
-        break;
-    }
-  }
-  if (dirty) {
-    uiDirty = true;
-  }
-}
-
-void drawPeerUi(uint32_t nowMs) {
-  if (!uiDirty && nowMs - lastUiRenderMs < 250) {
+void drawStatusUi(uint32_t nowMs) {
+  static uint32_t lastRenderMs = 0;
+  if (nowMs - lastRenderMs < 250) {
     return;
   }
-  lastUiRenderMs = nowMs;
-  uiDirty = false;
+  lastRenderMs = nowMs;
 
   ControlState state = getControlStateSnapshot();
-  auto peers = peerRegistry.peers();
   u8g2.clearBuffer();
   u8g2.setFont(u8g2_font_6x10_tf);
+
   u8g2.setCursor(0, 10);
-  u8g2.print("Peers:");
+  u8g2.print("Comms disabled");
 
-  for (size_t i = 0; i < peers.size() && i < 4; ++i) {
-    const auto &peer = peers[i];
-    bool isTarget = state.linkReady && state.targetMac == peer.mac;
-    u8g2.setCursor(0, 22 + static_cast<uint8_t>(i) * 10);
-    String label = peer.name.length() > 0 ? peer.name : formatMac(peer.mac);
-    if (label.length() > 14) {
-      label = label.substring(0, 14);
-    }
-    String prefix = isTarget ? "> " : "  ";
-    if (peer.acknowledged) {
-      prefix += "*";
-    } else {
-      prefix += " ";
-    }
-    u8g2.print(prefix + label);
-  }
+  u8g2.setCursor(0, 22);
+  u8g2.print("Motion: 0x");
+  u8g2.print(state.motion, HEX);
 
-  u8g2.setCursor(0, 54);
-  u8g2.print("Link: ");
-  u8g2.print(linkStateToString(peerRegistry.getLinkState()));
-  if (state.linkReady) {
-    uint32_t ageMs = nowMs - state.lastTelemetryMs;
-    u8g2.print(" ");
-    u8g2.print(ageMs / 1000.0f, 1);
-    u8g2.print("s");
-  }
+  u8g2.setCursor(0, 32);
+  u8g2.print("Speed: ");
+  u8g2.print(state.speed);
 
-  if (state.linkReady) {
-    u8g2.setCursor(0, 64);
-    u8g2.print("Target: ");
-    u8g2.print(formatMac(state.targetMac));
+  u8g2.setCursor(0, 42);
+  u8g2.print("Pump: ");
+  u8g2.print(state.pump ? "ON" : "OFF");
+  u8g2.print(" Flash: ");
+  u8g2.print(state.flash ? "ON" : "OFF");
+
+  u8g2.setCursor(0, 52);
+  u8g2.print("Buzzer: ");
+  u8g2.print(state.buzzer ? "ON" : "OFF");
+
+  u8g2.setCursor(0, 62);
+  if (state.cameraMode) {
+    u8g2.print("Camera yaw/pitch: ");
+    u8g2.print(state.cameraYaw);
+    u8g2.print('/');
+    u8g2.print(state.cameraPitch);
+  } else {
+    u8g2.print("Crane yaw/pitch: ");
+    u8g2.print(state.craneYaw);
+    u8g2.print('/');
+    u8g2.print(state.cranePitch);
   }
 
   u8g2.sendBuffer();
@@ -480,7 +315,6 @@ void setup() {
   timerAttachInterrupt(SpeedRetrieval_Handle, &retreiveSpeeds, true);
   timerAlarmWrite(SpeedRetrieval_Handle, 100000, true); //let's take a speed sample each 76ms maybe ? seems like a good compromise instinctively or something.
   timerAlarmEnable(SpeedRetrieval_Handle);
-  Serial.println("Initializing wireless communications");
 
 
   //Servo/LED PWM BootUP  =============
@@ -516,10 +350,6 @@ void setup() {
   u8g2.print("VDrop");
   u8g2.sendBuffer();
 
-  if (!discovery.begin()) {
-    Serial.println("[COMM] Failed to initialize ESP-NOW discovery");
-  }
-
   ArduinoOTA.setHostname("Bulky");
   ArduinoOTA.onStart([]() {
     audioFeedback.playPattern(AudioFeedback::Pattern::TargetCleared);
@@ -532,9 +362,6 @@ void setup() {
     audioFeedback.playPattern(AudioFeedback::Pattern::TelemetryTimeout);
   });
   ArduinoOTA.begin();
-
-  uiDirty = true;
-  processPeerEvents();
 
   if (xTaskCreatePinnedToCore(sensorTask, "sensor-task", 4096, nullptr, 3,
                               &sensorTaskHandle, 0) != pdPASS) {
@@ -599,9 +426,7 @@ void controlTask(void *param)
   for (;;) {
     uint32_t now = millis();
     ArduinoOTA.handle();
-    processPeerEvents();
     audioFeedback.loop(now);
-    updateControlFromComms();
     vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
@@ -630,7 +455,7 @@ void uiTask(void *param)
 {
   (void)param;
   for (;;) {
-    drawPeerUi(millis());
+    drawStatusUi(millis());
     vTaskDelay(pdMS_TO_TICKS(100));
   }
 }
