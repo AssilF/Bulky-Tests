@@ -459,7 +459,7 @@ bool EspNowDiscovery::handleIliteMessage(const uint8_t *mac, const uint8_t *data
       if (peer.name.length() == 0) {
         peer.name = String("Drone");
       }
-      peer.platform = String("ILITE");
+      peer.platform = String("bulky");
       peer.lastSeenMs = millis();
       peer.acknowledged = false;
 
@@ -497,9 +497,9 @@ bool EspNowDiscovery::handleIliteMessage(const uint8_t *mac, const uint8_t *data
         peer.mac = iliteMac;
         peer.name = iliteIdentityToString(message.identity);
         if (peer.name.length() == 0) {
-          peer.name = String("ILITE");
+          peer.name = String("Bulky");
         }
-        peer.platform = String("ILITE");
+        peer.platform = String("Bulky");
       }
 
       peer.lastSeenMs = millis();
