@@ -8,6 +8,7 @@ static uint8_t controllerMac[6] = {0};
 const uint8_t BroadcastMac[6] = {0xff,0xff,0xff,0xff,0xff,0xff};
 
 static void onDataRecv(const uint8_t* mac, const uint8_t* incomingData, int len) {
+    Serial.println("Recieved");
     if (len == sizeof(IdentityMessage) && !g_paired) {
         const IdentityMessage* msg = reinterpret_cast<const IdentityMessage*>(incomingData);
         if (msg->type == SCAN_REQUEST) {
@@ -16,6 +17,7 @@ static void onDataRecv(const uint8_t* mac, const uint8_t* incomingData, int len)
             strncpy(resp.identity, "BULKYBOT", sizeof(resp.identity));
             WiFi.macAddress(resp.mac);
             esp_now_send(mac, reinterpret_cast<const uint8_t*>(&resp), sizeof(resp));
+            Serial.println("sent");
             return;
         } else if (msg->type == ILITE_IDENTITY) {
             memcpy(controllerMac, mac, 6);
@@ -30,6 +32,7 @@ static void onDataRecv(const uint8_t* mac, const uint8_t* incomingData, int len)
             ack.type = DRONE_ACK;
             strncpy(ack.identity, "BULKYBOT", sizeof(ack.identity));
             esp_now_send(mac, reinterpret_cast<const uint8_t*>(&ack), sizeof(ack));
+            Serial.println("sent2");
             g_paired = true;
             return;
         }
@@ -45,7 +48,7 @@ static bool initInternal(const char *ssid, const char *password, int tcpPort, es
     (void)tcpPort;
     // Run in AP+STA mode so ESP-NOW remains operational alongside SoftAP
     WiFi.mode(WIFI_AP_STA);
-    WiFi.setTxPower(WIFI_POWER_8_5dBm);
+    WiFi.setTxPower(WIFI_POWER_18_5dBm);
     WiFi.setSleep(false);
     WiFi.softAP(ssid, password);
 
