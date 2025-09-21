@@ -2,7 +2,6 @@
 #include <SPI.h>
 #include <WiFi.h>
 #include <WiFiClient.h>
-#include <esp_now.h>
 #include <ArduinoOTA.h>
 #include <Adafruit_PWMServoDriver.h>
 #include <freertos/FreeRTOS.h>
@@ -151,117 +150,10 @@ void uiTask(void *param);
 AudioFeedback audioFeedback([](uint16_t frequency) { ledcWriteTone(2, frequency); });
 void drawStatusUi(uint32_t nowMs);
 
-// ==================== Telemetry and ESP-NOW configuration ====================
+// ==================== Network configuration ====================
 const char *WIFI_SSID = "Bulky Telemetry";
 const char *WIFI_PASSWORD = "BulkyTelemetry";
 const int TCP_PORT = 8000;
-const unsigned long TELEMETRY_INTERVAL = 100; // ms
-const char *DRONE_ID = "BulkyBot";
-const uint32_t PACKET_MAGIC = 0xA1B2C3D4;
-
-WiFiServer server(TCP_PORT);
-WiFiClient client;
-Comms::ThrustCommand command = {PACKET_MAGIC, 0, 0, 0, 0, false};
-portMUX_TYPE commandMux = portMUX_INITIALIZER_UNLOCKED;
-portMUX_TYPE commsStateMux = portMUX_INITIALIZER_UNLOCKED;
-
-unsigned long lastTelemetry = 0;
-const unsigned long CONNECTION_TIMEOUT = 1000;
-const unsigned long HANDSHAKE_COOLDOWN = 500;
-unsigned long lastHandshakeSent = 0;
-bool telemetryEnabled = true;
-bool serialActive = false;
-
-static uint8_t iliteMac[6] = {0};
-uint8_t selfMac[6];
-static uint8_t commandPeer[6] = {0};
-static bool ilitePaired = false;
-static bool commandPeerSet = false;
-static uint32_t lastCommandTimeMs = 0;
-
-struct LinkStateSnapshot {
-  bool ilitePaired = false;
-  bool commandPeerSet = false;
-  uint8_t iliteMac[6] = {0};
-  uint8_t commandPeer[6] = {0};
-  uint32_t lastCommandTimeMs = 0;
-};
-
-static inline Comms::ThrustCommand loadCommandSnapshot() {
-  portENTER_CRITICAL(&commandMux);
-  Comms::ThrustCommand snapshot = command;
-  portEXIT_CRITICAL(&commandMux);
-  return snapshot;
-}
-
-static inline void storeCommandSnapshotFromISR(const Comms::ThrustCommand &value) {
-  portENTER_CRITICAL_ISR(&commandMux);
-  command = value;
-  portEXIT_CRITICAL_ISR(&commandMux);
-}
-
-static inline LinkStateSnapshot loadLinkStateSnapshot() {
-  LinkStateSnapshot snapshot;
-  portENTER_CRITICAL(&commsStateMux);
-  snapshot.ilitePaired = ilitePaired;
-  snapshot.commandPeerSet = commandPeerSet;
-  memcpy(snapshot.iliteMac, iliteMac, sizeof(iliteMac));
-  memcpy(snapshot.commandPeer, commandPeer, sizeof(commandPeer));
-  snapshot.lastCommandTimeMs = lastCommandTimeMs;
-  portEXIT_CRITICAL(&commsStateMux);
-  return snapshot;
-}
-
-static inline void setLastCommandTimeMsFromISR(uint32_t value) {
-  portENTER_CRITICAL_ISR(&commsStateMux);
-  lastCommandTimeMs = value;
-  portEXIT_CRITICAL_ISR(&commsStateMux);
-}
-
-static inline void setIlitePeerFromISR(const uint8_t *mac) {
-  portENTER_CRITICAL_ISR(&commsStateMux);
-  memcpy(iliteMac, mac, sizeof(iliteMac));
-  ilitePaired = true;
-  portEXIT_CRITICAL_ISR(&commsStateMux);
-}
-
-static inline bool copyIliteMacFromISR(uint8_t dest[6]) {
-  portENTER_CRITICAL_ISR(&commsStateMux);
-  bool paired = ilitePaired;
-  if (paired) {
-    memcpy(dest, iliteMac, sizeof(iliteMac));
-  }
-  portEXIT_CRITICAL_ISR(&commsStateMux);
-  return paired;
-}
-
-static inline bool updateCommandPeerFromISR(const uint8_t *mac) {
-  portENTER_CRITICAL_ISR(&commsStateMux);
-  bool changed = !commandPeerSet || memcmp(commandPeer, mac, sizeof(commandPeer)) != 0;
-  if (changed) {
-    memcpy(commandPeer, mac, sizeof(commandPeer));
-    commandPeerSet = true;
-  }
-  portEXIT_CRITICAL_ISR(&commsStateMux);
-  return changed;
-}
-
-static inline LinkStateSnapshot clearLinkState() {
-  LinkStateSnapshot previous;
-  portENTER_CRITICAL(&commsStateMux);
-  previous.ilitePaired = ilitePaired;
-  previous.commandPeerSet = commandPeerSet;
-  memcpy(previous.iliteMac, iliteMac, sizeof(iliteMac));
-  memcpy(previous.commandPeer, commandPeer, sizeof(commandPeer));
-  previous.lastCommandTimeMs = lastCommandTimeMs;
-  ilitePaired = false;
-  commandPeerSet = false;
-  memset(iliteMac, 0, sizeof(iliteMac));
-  memset(commandPeer, 0, sizeof(commandPeer));
-  lastCommandTimeMs = 0;
-  portEXIT_CRITICAL(&commsStateMux);
-  return previous;
-}
 
 void resetControlState()
 {
@@ -321,21 +213,16 @@ void drawStatusUi(uint32_t nowMs) {
   u8g2.clearBuffer();
   u8g2.setFont(u8g2_font_6x10_tf);
 
-  LinkStateSnapshot linkState = loadLinkStateSnapshot();
   u8g2.setCursor(0, 10);
-  if (linkState.ilitePaired) {
-    u8g2.print("Comms paired");
-  } else {
-    u8g2.print("Comms waiting");
-  }
+  u8g2.print("Echo listener ready");
 
   u8g2.setCursor(0, 22);
-  u8g2.print("Motion: 0x");
-  u8g2.print(state.motion, HEX);
+  u8g2.print("SSID: ");
+  u8g2.print(WIFI_SSID);
 
   u8g2.setCursor(0, 32);
-  u8g2.print("Speed: ");
-  u8g2.print(state.speed);
+  u8g2.print("Motion: 0x");
+  u8g2.print(state.motion, HEX);
 
   u8g2.setCursor(0, 42);
   u8g2.print("Pump: ");
@@ -365,186 +252,7 @@ void drawStatusUi(uint32_t nowMs) {
 
 void handleIncomingData()
 {
-#if ARDUINO_USB_CDC_ON_BOOT
-  serialActive = Serial;
-#else
-  if (Serial.available()) {
-    serialActive = true;
-  }
-#endif
-
-  if (!client || !client.connected()) {
-    WiFiClient newClient = server.available();
-    if (newClient) {
-      if (client) {
-        client.stop();
-      }
-      client = newClient;
-      Serial.println("[COMMS] TCP client connected");
-    }
-  }
-
-  while (client && client.available()) {
-    client.read();
-  }
-
-  while (Serial.available()) {
-    Serial.read();
-  }
-}
-
-void monitorConnection() {
-  LinkStateSnapshot state = loadLinkStateSnapshot();
-  if (!state.ilitePaired) {
-    return;
-  }
-
-  uint32_t now = millis();
-  if (state.lastCommandTimeMs > 0 && now - state.lastCommandTimeMs > CONNECTION_TIMEOUT) {
-    LinkStateSnapshot cleared = clearLinkState();
-    Serial.println("[COMMS] Controller timeout");
-    if (cleared.ilitePaired) {
-      esp_now_del_peer(cleared.iliteMac);
-    }
-    if (cleared.commandPeerSet) {
-      esp_now_del_peer(cleared.commandPeer);
-    }
-  }
-}
-
-void streamTelemetry()
-{
-  if (millis() - lastTelemetry < TELEMETRY_INTERVAL) {
-    return;
-  }
-
-  lastTelemetry = millis();
-
-  Comms::ThrustCommand currentCommand = loadCommandSnapshot();
-  LinkStateSnapshot linkState = loadLinkStateSnapshot();
-  uint32_t commandAge = (linkState.lastCommandTimeMs > 0) ? (millis() - linkState.lastCommandTimeMs) : 0;
-
-  Comms::TelemetryPacket packet = {
-      PACKET_MAGIC,
-      0.0f, 0.0f, 0.0f,
-      0.0f, 0.0f, 0.0f,
-      currentCommand.throttle,
-      currentCommand.pitchAngle, currentCommand.rollAngle, currentCommand.yawAngle,
-      0.0f,
-      commandAge
-  };
-
-  if (linkState.ilitePaired) {
-    esp_now_send(linkState.iliteMac, reinterpret_cast<uint8_t *>(&packet), sizeof(packet));
-  }
-
-  if (linkState.commandPeerSet && (!linkState.ilitePaired || memcmp(linkState.commandPeer, linkState.iliteMac, 6) != 0)) {
-    esp_now_send(linkState.commandPeer, reinterpret_cast<uint8_t *>(&packet), sizeof(packet));
-  }
-
-  bool tcpActive = client && client.connected();
-  if (!(telemetryEnabled && (serialActive || tcpActive))) {
-    return;
-  }
-
-  ControlState state = getControlStateSnapshot();
-  String telemetry = String("CTRL:") + String(state.motion, HEX) + " " +
-                     String(state.speed) + " " +
-                     (state.pump ? "P1" : "P0") + " " +
-                     (state.flash ? "F1" : "F0") + " " +
-                     (state.buzzer ? "B1" : "B0") + " " +
-                     (state.cameraMode ? "CAM" : "CRN") + " " +
-                     String(state.cameraYaw) + "/" + String(state.cameraPitch) + " " +
-                     String(state.craneYaw) + "/" + String(state.cranePitch) + " " +
-                     "AGE:" + String(commandAge);
-
-  if (serialActive) {
-    Serial.println(telemetry);
-  }
-  if (tcpActive) {
-    client.println(telemetry);
-    client.flush();
-  }
-}
-
-void onReceive(const uint8_t *mac, const uint8_t *incomingData, int len)
-{
-  if (len == sizeof(Comms::IdentityMessage)) {
-    Comms::IdentityMessage msg{};
-    memcpy(&msg, incomingData, sizeof(msg));
-    unsigned long now = millis();
-
-    if (msg.type == Comms::SCAN_REQUEST) {
-      if (now - lastHandshakeSent > HANDSHAKE_COOLDOWN) {
-        if (!esp_now_is_peer_exist(mac)) {
-          esp_now_peer_info_t peerInfo{};
-          memcpy(peerInfo.peer_addr, mac, 6);
-          peerInfo.channel = 0;
-          peerInfo.encrypt = false;
-          esp_now_add_peer(&peerInfo);
-        }
-        Comms::IdentityMessage resp{};
-        resp.type = Comms::DRONE_IDENTITY;
-        strncpy(resp.identity, DRONE_ID, sizeof(resp.identity));
-        memcpy(resp.mac, selfMac, 6);
-        esp_now_send(mac, reinterpret_cast<uint8_t *>(&resp), sizeof(resp));
-        lastHandshakeSent = now;
-        Serial.println("[COMMS] Responded to scan request");
-      }
-    } else if (msg.type == Comms::ILITE_IDENTITY) {
-      uint8_t existingMac[6];
-      bool wasPaired = copyIliteMacFromISR(existingMac);
-      bool isNewPeer = !wasPaired || memcmp(existingMac, msg.mac, sizeof(existingMac)) != 0;
-      if (isNewPeer) {
-        setIlitePeerFromISR(msg.mac);
-        updateCommandPeerFromISR(msg.mac);
-      }
-
-      esp_now_peer_info_t peerInfo{};
-      memcpy(peerInfo.peer_addr, msg.mac, 6);
-      peerInfo.channel = 0;
-      peerInfo.encrypt = false;
-      if (!esp_now_is_peer_exist(msg.mac)) {
-        esp_now_add_peer(&peerInfo);
-      }
-
-      Comms::IdentityMessage ack{};
-      ack.type = Comms::DRONE_ACK;
-      strncpy(ack.identity, DRONE_ID, sizeof(ack.identity));
-      memcpy(ack.mac, selfMac, 6);
-      esp_now_send(msg.mac, reinterpret_cast<uint8_t *>(&ack), sizeof(ack));
-      lastHandshakeSent = now;
-      Serial.println("[COMMS] Paired with controller");
-    }
-
-    return;
-  }
-
-  if (len == sizeof(Comms::ThrustCommand)) {
-    Comms::ThrustCommand incoming{};
-    memcpy(&incoming, incomingData, sizeof(incoming));
-
-    uint8_t pairedMac[6];
-    bool paired = copyIliteMacFromISR(pairedMac);
-    if (!paired || memcmp(mac, pairedMac, 6) != 0 || incoming.magic != PACKET_MAGIC) {
-      return;
-    }
-
-    storeCommandSnapshotFromISR(incoming);
-    uint32_t nowMs = xTaskGetTickCountFromISR() * portTICK_PERIOD_MS;
-    setLastCommandTimeMsFromISR(nowMs);
-
-    bool peerChanged = updateCommandPeerFromISR(mac);
-    if (peerChanged) {
-      esp_now_peer_info_t peerInfo{};
-      memcpy(peerInfo.peer_addr, mac, 6);
-      peerInfo.channel = 0;
-      peerInfo.encrypt = false;
-      if (!esp_now_is_peer_exist(mac)) {
-        esp_now_add_peer(&peerInfo);
-      }
-    }
-  }
+  Comms::loop();
 }
 
 void action()
@@ -656,13 +364,11 @@ void setup() {
   u8g2.sendBuffer();
 
   WiFi.disconnect(true);
-  if (!Comms::init(WIFI_SSID, WIFI_PASSWORD, TCP_PORT, onReceive)) {
-    Serial.println("[COMMS] Failed to initialise ESP-NOW");
+  if (!Comms::init(WIFI_SSID, WIFI_PASSWORD, TCP_PORT)) {
+    Serial.println("[COMMS] Failed to start echo listener");
   } else {
-    Serial.println("[COMMS] ESP-NOW ready");
+    Serial.println("[COMMS] Echo listener ready");
   }
-  WiFi.macAddress(selfMac);
-  server.begin();
   Serial.print("[COMMS] SoftAP SSID: ");
   Serial.println(WIFI_SSID);
   Serial.print("[COMMS] SoftAP IP: ");
@@ -746,8 +452,6 @@ void controlTask(void *param)
     ArduinoOTA.handle();
     audioFeedback.loop(now);
     handleIncomingData();
-    monitorConnection();
-    streamTelemetry();
     vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
