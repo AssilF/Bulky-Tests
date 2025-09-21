@@ -158,7 +158,7 @@ void EspNowDiscovery::clearTarget() {
 }
 
 void EspNowDiscovery::onReceiveStatic(const uint8_t *mac, const uint8_t *data, int len) {
-  Serial.println("Recieved!");
+    Serial.print("[ESP-NOW] Recieved a packet ");
   if (g_instance != nullptr) {
     g_instance->handleIncoming(mac, data, len);
   }
