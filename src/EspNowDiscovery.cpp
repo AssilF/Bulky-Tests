@@ -305,7 +305,6 @@ bool EspNowDiscovery::ensurePeer(const std::array<uint8_t, 6> &mac) {
   esp_now_peer_info_t peerInfo{};
   memcpy(peerInfo.peer_addr, mac.data(), mac.size());
   peerInfo.channel = 0;
-  peerInfo.ifidx = WIFI_IF_STA;
   peerInfo.encrypt = false;
 
   esp_err_t result = esp_now_add_peer(&peerInfo);
