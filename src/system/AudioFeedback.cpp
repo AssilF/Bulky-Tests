@@ -65,46 +65,81 @@ void AudioFeedback::playPattern(Pattern pattern) {
 }
 
 void AudioFeedback::loop(uint32_t nowMs) {
-  if (!hasActiveSegment_ && queue_.empty()) {
+  bool queueEmpty = false;
+  bool active = false;
+  {
+    portENTER_CRITICAL(&lock_);
+    queueEmpty = (queueSize_ == 0);
+    active = hasActiveSegment_;
+    portEXIT_CRITICAL(&lock_);
+  }
+
+  if (!active && queueEmpty) {
     return;
   }
 
-  if (!hasActiveSegment_) {
+  if (!active) {
     startNextSegment(nowMs);
   }
 
-  if (!hasActiveSegment_) {
-    return;
+  Segment currentSegment{};
+  bool inPause = false;
+  uint32_t segmentStart = 0;
+  uint32_t pauseStart = 0;
+  {
+    portENTER_CRITICAL(&lock_);
+    if (!hasActiveSegment_) {
+      portEXIT_CRITICAL(&lock_);
+      return;
+    }
+    currentSegment = activeSegment_;
+    inPause = inPause_;
+    segmentStart = segmentStartMs_;
+    pauseStart = pauseStartMs_;
+    portEXIT_CRITICAL(&lock_);
   }
 
-  if (!inPause_) {
-    if (nowMs - segmentStartMs_ >= activeSegment_.durationMs) {
+  if (!inPause) {
+    if (nowMs - segmentStart >= currentSegment.durationMs) {
       toneWriter_(0);
-      inPause_ = activeSegment_.pauseMs > 0;
-      if (inPause_) {
+      bool shouldPause = currentSegment.pauseMs > 0;
+      portENTER_CRITICAL(&lock_);
+      if (shouldPause) {
+        inPause_ = true;
         pauseStartMs_ = nowMs;
       } else {
         hasActiveSegment_ = false;
       }
+      portEXIT_CRITICAL(&lock_);
     }
   } else {
-    if (nowMs - pauseStartMs_ >= activeSegment_.pauseMs) {
+    if (nowMs - pauseStart >= currentSegment.pauseMs) {
+      portENTER_CRITICAL(&lock_);
       hasActiveSegment_ = false;
       inPause_ = false;
+      portEXIT_CRITICAL(&lock_);
     }
   }
 
-  if (!hasActiveSegment_ && !queue_.empty()) {
+  bool shouldStartNext = false;
+  {
+    portENTER_CRITICAL(&lock_);
+    shouldStartNext = !hasActiveSegment_ && queueSize_ > 0;
+    portEXIT_CRITICAL(&lock_);
+  }
+  if (shouldStartNext) {
     startNextSegment(nowMs);
   }
 }
 
 void AudioFeedback::stop() {
-  while (!queue_.empty()) {
-    queue_.pop();
-  }
+  portENTER_CRITICAL(&lock_);
+  queueHead_ = 0;
+  queueTail_ = 0;
+  queueSize_ = 0;
   hasActiveSegment_ = false;
   inPause_ = false;
+  portEXIT_CRITICAL(&lock_);
   toneWriter_(0);
 }
 
@@ -114,23 +149,54 @@ void AudioFeedback::enqueuePattern(Pattern pattern) {
   if (segments == nullptr) {
     return;
   }
-  for (size_t i = 0; i < length; ++i) {
-    queue_.push(segments[i]);
+  portENTER_CRITICAL(&lock_);
+  if (length > kQueueCapacity - queueSize_) {
+    portEXIT_CRITICAL(&lock_);
+    return;
   }
+  for (size_t i = 0; i < length; ++i) {
+    queueBuffer_[queueTail_] = segments[i];
+    queueTail_ = (queueTail_ + 1) % kQueueCapacity;
+  }
+  queueSize_ += length;
+  portEXIT_CRITICAL(&lock_);
 }
 
 void AudioFeedback::startNextSegment(uint32_t nowMs) {
-  if (queue_.empty()) {
-    hasActiveSegment_ = false;
+  Segment nextSegment{};
+  bool segmentLoaded = false;
+  {
+    portENTER_CRITICAL(&lock_);
+    if (queueSize_ > 0) {
+      nextSegment = queueBuffer_[queueHead_];
+      queueHead_ = (queueHead_ + 1) % kQueueCapacity;
+      --queueSize_;
+      activeSegment_ = nextSegment;
+      hasActiveSegment_ = true;
+      inPause_ = false;
+      segmentStartMs_ = nowMs;
+      segmentLoaded = true;
+    } else {
+      hasActiveSegment_ = false;
+    }
+    portEXIT_CRITICAL(&lock_);
+  }
+
+  if (!segmentLoaded) {
     return;
   }
-  activeSegment_ = queue_.front();
-  queue_.pop();
-  hasActiveSegment_ = true;
-  inPause_ = false;
-  segmentStartMs_ = nowMs;
-  toneWriter_(activeSegment_.frequency);
-  if (activeSegment_.durationMs == 0) {
+
+  toneWriter_(nextSegment.frequency);
+  if (nextSegment.durationMs == 0) {
+    portENTER_CRITICAL(&lock_);
     hasActiveSegment_ = false;
+    portEXIT_CRITICAL(&lock_);
   }
+}
+
+bool AudioFeedback::isActive() const {
+  portENTER_CRITICAL(&lock_);
+  bool active = hasActiveSegment_ || queueSize_ > 0;
+  portEXIT_CRITICAL(&lock_);
+  return active;
 }
