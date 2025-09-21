@@ -593,10 +593,10 @@ void setup() {
   ledcAttachPin(Buzzer_Pin,2);
 
   //interrupt assignments
-  attachInterrupt(Encoder_Left_Top,LT_ISR,RISING);
-  attachInterrupt(Encoder_Left_Bot,LB_ISR,RISING);
-  attachInterrupt(Encoder_Right_Top,RT_ISR,RISING);
-  attachInterrupt(Encoder_Right_Bot,RB_ISR,RISING);
+  // attachInterrupt(Encoder_Left_Top,LT_ISR,RISING);
+  // attachInterrupt(Encoder_Left_Bot,LB_ISR,RISING);
+  // attachInterrupt(Encoder_Right_Top,RT_ISR,RISING);
+  // attachInterrupt(Encoder_Right_Bot,RB_ISR,RISING);
 
 
   Serial.begin(115200);
@@ -616,10 +616,10 @@ void setup() {
   timerAlarmWrite(ShiftPWM_Handle, 3, true);
   timerAlarmEnable(ShiftPWM_Handle);
 
-  SpeedRetrieval_Handle = timerBegin(1, 240, true);
-  timerAttachInterrupt(SpeedRetrieval_Handle, &retreiveSpeeds, true);
-  timerAlarmWrite(SpeedRetrieval_Handle, 100000, true); //let's take a speed sample each 76ms maybe ? seems like a good compromise instinctively or something.
-  timerAlarmEnable(SpeedRetrieval_Handle);
+  // SpeedRetrieval_Handle = timerBegin(1, 240, true);
+  // timerAttachInterrupt(SpeedRetrieval_Handle, &retreiveSpeeds, true);
+  // timerAlarmWrite(SpeedRetrieval_Handle, 100000, true); //let's take a speed sample each 76ms maybe ? seems like a good compromise instinctively or something.
+  // timerAlarmEnable(SpeedRetrieval_Handle);
 
 
   //Servo/LED PWM BootUP  =============
@@ -663,7 +663,6 @@ void setup() {
   }
   WiFi.macAddress(selfMac);
   server.begin();
-  server.setNoDelay(true);
   Serial.print("[COMMS] SoftAP SSID: ");
   Serial.println(WIFI_SSID);
   Serial.print("[COMMS] SoftAP IP: ");
