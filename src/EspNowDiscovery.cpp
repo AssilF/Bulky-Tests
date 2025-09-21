@@ -5,7 +5,10 @@
 #include <esp_wifi.h>
 
 #include <algorithm>
+#include <array>
 #include <cstring>
+#include <iterator>
+#include <type_traits>
 
 namespace {
 constexpr uint32_t kPeerStaleTimeoutMs = 5000;
@@ -29,24 +32,58 @@ std::array<uint8_t, 6> broadcastAddress() {
   return {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 }
 
+template <typename Packet>
+bool copyPacketFromBytes(const uint8_t *data, int len, Packet &out) {
+  static_assert(std::is_trivially_copyable<Packet>::value, "Packet must be trivially copyable");
+  if (data == nullptr || len < 0) {
+    return false;
+  }
+  if (static_cast<size_t>(len) < sizeof(Packet)) {
+    return false;
+  }
+  std::memcpy(&out, data, sizeof(Packet));
+  return true;
+}
+
+template <size_t N>
+String safeStringFromArray(const char (&raw)[N]) {
+  std::array<char, N + 1> sanitized{};
+  size_t length = 0;
+  while (length < N && raw[length] != '\0') {
+    sanitized[length] = raw[length];
+    ++length;
+  }
+  sanitized[length] = '\0';
+  return String(sanitized.data());
+}
+
 String macToString(const uint8_t *mac) {
-  char buffer[18];
-  snprintf(buffer, sizeof(buffer), "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  if (mac == nullptr) {
+    return String();
+  }
+  char buffer[18]{};
+  int written = snprintf(buffer, sizeof(buffer), "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3],
+                         mac[4], mac[5]);
+  if (written < 0) {
+    buffer[0] = '\0';
+  } else if (written >= static_cast<int>(sizeof(buffer))) {
+    buffer[sizeof(buffer) - 1] = '\0';
+  }
   return String(buffer);
 }
 
 String iliteIdentityToString(const char *rawIdentity) {
+  if (rawIdentity == nullptr) {
+    return String();
+  }
+  std::array<char, kIliteIdentityLength + 1> sanitized{};
   size_t length = 0;
   while (length < kIliteIdentityLength && rawIdentity[length] != '\0') {
+    sanitized[length] = rawIdentity[length];
     ++length;
   }
-
-  char buffer[kIliteIdentityLength + 1]{};
-  if (length > 0) {
-    memcpy(buffer, rawIdentity, length);
-  }
-  buffer[length] = '\0';
-  return String(buffer);
+  sanitized[length] = '\0';
+  return String(sanitized.data());
 }
 
 }  // namespace
@@ -145,7 +182,7 @@ void EspNowDiscovery::requestAckRescan() {
 }
 
 void EspNowDiscovery::setTarget(const std::array<uint8_t, 6> &mac) {
-  memcpy(targetMac_.data(), mac.data(), targetMac_.size());
+  targetMac_ = mac;
   hasTarget_ = true;
   registry_.selectPeer(mac);
   stopScan();
@@ -216,6 +253,10 @@ void EspNowDiscovery::handleIncoming(const uint8_t *mac, const uint8_t *data, in
     return;
   }
 
+  if (mac == nullptr || data == nullptr) {
+    return;
+  }
+
   if (len < static_cast<int>(sizeof(Comm::PacketHeader))) {
     return;
   }
@@ -229,20 +270,18 @@ void EspNowDiscovery::handleIncoming(const uint8_t *mac, const uint8_t *data, in
     case Comm::MessageType::DroneIdentity:
     case Comm::MessageType::IliteIdentity:
     case Comm::MessageType::DroneAck: {
-      if (len < static_cast<int>(sizeof(Comm::DiscoveryPacket))) {
+      Comm::DiscoveryPacket packet{};
+      if (!copyPacketFromBytes(data, len, packet)) {
         return;
       }
-      Comm::DiscoveryPacket packet;
-      memcpy(&packet, data, sizeof(packet));
       handleDiscoveryPacket(mac, packet);
       break;
     }
     case Comm::MessageType::Feedback: {
-      if (len < static_cast<int>(sizeof(Comm::FeedbackPacket))) {
+      Comm::FeedbackPacket packet{};
+      if (!copyPacketFromBytes(data, len, packet)) {
         return;
       }
-      Comm::FeedbackPacket packet;
-      memcpy(&packet, data, sizeof(packet));
       handleFeedbackPacket(packet);
       break;
     }
@@ -254,8 +293,8 @@ void EspNowDiscovery::handleIncoming(const uint8_t *mac, const uint8_t *data, in
 void EspNowDiscovery::handleDiscoveryPacket(const uint8_t *mac, const Comm::DiscoveryPacket &packet) {
   Comm::PeerInfo peer;
   peer.mac = packet.mac;
-  peer.name = String(packet.name);
-  peer.platform = String(packet.platform);
+  peer.name = safeStringFromArray(packet.name);
+  peer.platform = safeStringFromArray(packet.platform);
   peer.lastSeenMs = millis();
   peer.acknowledged = packet.header.type == Comm::MessageType::DroneAck;
   registry_.upsertPeer(peer, peer.acknowledged);
@@ -282,7 +321,7 @@ void EspNowDiscovery::sendIliteIdentity(const std::array<uint8_t, 6> &mac, const
   IliteIdentityMessage iliteIdentity;
   iliteIdentity.type = kIliteControllerIdentityType;
   strlcpy(iliteIdentity.identity, kIliteControllerIdentity, sizeof(iliteIdentity.identity));
-  memcpy(iliteIdentity.mac, localMac_.data(), localMac_.size());
+  std::copy(localMac_.begin(), localMac_.end(), std::begin(iliteIdentity.mac));
 
   esp_err_t status = esp_now_send(mac.data(), reinterpret_cast<uint8_t *>(&iliteIdentity), sizeof(iliteIdentity));
   if (status != ESP_OK) {
@@ -311,7 +350,7 @@ bool EspNowDiscovery::ensurePeer(const std::array<uint8_t, 6> &mac) {
   }
 
   esp_now_peer_info_t peerInfo{};
-  memcpy(peerInfo.peer_addr, mac.data(), mac.size());
+  std::copy(mac.begin(), mac.end(), std::begin(peerInfo.peer_addr));
   peerInfo.channel = 0;
   peerInfo.encrypt = false;
 
@@ -355,10 +394,10 @@ bool EspNowDiscovery::handleIliteMessage(const uint8_t *mac, const uint8_t *data
   identityBytes = std::min(identityBytes, sizeof(message.identity));
 
   if (identityBytes > 0) {
-    memcpy(message.identity, data + 1, identityBytes);
+    std::copy_n(data + 1, identityBytes, message.identity);
   }
   if (macIncluded) {
-    memcpy(message.mac, data + (len - sizeof(message.mac)), sizeof(message.mac));
+    std::copy_n(data + (len - static_cast<int>(sizeof(message.mac))), sizeof(message.mac), message.mac);
   }
 
   std::array<uint8_t, 6> iliteMac{};
@@ -375,7 +414,7 @@ bool EspNowDiscovery::handleIliteMessage(const uint8_t *mac, const uint8_t *data
     if (isBroadcastMac) {
       return false;
     }
-    memcpy(iliteMac.data(), mac, iliteMac.size());
+    std::copy_n(mac, iliteMac.size(), iliteMac.begin());
   }
 
   switch (message.type) {
@@ -484,10 +523,10 @@ bool EspNowDiscovery::handleIliteMessage(const uint8_t *mac, const uint8_t *data
 }
 
 void EspNowDiscovery::sendIliteScanRequest() {
-  IliteIdentityMessage scanRequest;
+  IliteIdentityMessage scanRequest{};
   scanRequest.type = kIliteScanRequestType;
-  memset(scanRequest.identity, 0, sizeof(scanRequest.identity));
-  memcpy(scanRequest.mac, localMac_.data(), localMac_.size());
+  std::fill(std::begin(scanRequest.identity), std::end(scanRequest.identity), 0);
+  std::copy(localMac_.begin(), localMac_.end(), std::begin(scanRequest.mac));
 
   esp_err_t status =
       esp_now_send(broadcastAddress().data(), reinterpret_cast<uint8_t *>(&scanRequest), sizeof(scanRequest));
