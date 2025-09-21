@@ -349,8 +349,6 @@ void action()
   }
 }
 
-
-
 void setup() {
   u8g2.begin();
   //Pin Defs
@@ -413,7 +411,6 @@ void setup() {
 
   resetControlState();
   Serial.println("Initializing wireless communications");
-  delay(10);
 
 
   //Servo/LED PWM BootUP  =============
@@ -453,7 +450,7 @@ void setup() {
     Serial.println("[COMM] Failed to initialize ESP-NOW discovery");
   }
 
-  ArduinoOTA.setHostname("ilite-controller");
+  ArduinoOTA.setHostname("Bulky");
   ArduinoOTA.onStart([]() {
     audioFeedback.playPattern(AudioFeedback::Pattern::TargetCleared);
   });
