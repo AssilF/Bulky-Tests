@@ -3,7 +3,7 @@
 
 namespace Comms {
 static bool g_paired = false;
-static ThrustCommand lastCmd = {0};
+static ControlPacket lastCmd = {0};
 static uint8_t controllerMac[6] = {0};
 const uint8_t BroadcastMac[6] = {0xff,0xff,0xff,0xff,0xff,0xff};
 
@@ -33,8 +33,8 @@ static void onDataRecv(const uint8_t* mac, const uint8_t* incomingData, int len)
             return;
         }
     }
-    if (len == sizeof(ThrustCommand)) {
-        const ThrustCommand* cmd = reinterpret_cast<const ThrustCommand*>(incomingData);
+    if (len == sizeof(ControlPacket)) {
+        const ControlPacket* cmd = reinterpret_cast<const ControlPacket*>(incomingData);
         lastCmd = *cmd;
         return;
     }
@@ -76,7 +76,7 @@ bool init(const char *ssid, const char *password, int tcpPort, esp_now_recv_cb_t
     return initInternal(ssid, password, tcpPort, recvCallback);
 }
 
-bool receiveCommand(ThrustCommand &cmd) {
+bool receiveCommand(ControlPacket &cmd) {
     cmd = lastCmd;
     return g_paired;
 }
