@@ -18,6 +18,12 @@
 #include "comms.h"
 #include "system/AudioFeedback.h"
 
+// Add missing commsStateMux definition
+portMUX_TYPE commsStateMux = portMUX_INITIALIZER_UNLOCKED;
+
+// Add missing commandMux definition
+portMUX_TYPE commandMux = portMUX_INITIALIZER_UNLOCKED;
+
 U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0);
 //this is the13th of october, my laptop apparently cannot even keep up with my rate of writing :D:D:D:
 //notes:
@@ -120,6 +126,7 @@ hw_timer_t *ShiftPWM_Handle = NULL;
 hw_timer_t *SpeedRetrieval_Handle = NULL;
 
 
+
 //Modes
 int operationMode;
 #define radioControlledMode 0
@@ -146,6 +153,15 @@ void sensorTask(void *param);
 void controlTask(void *param);
 void actuatorTask(void *param);
 void uiTask(void *param);
+
+const uint32_t CPU_FREQ_MHZ = 240;
+const uint16_t FAST_TASK_STACK = 4096;
+const uint16_t COMM_TASK_STACK = 8192;
+const uint16_t FAILSAFE_TASK_STACK = 2048;
+const uint16_t TELEMETRY_TASK_STACK = 4096;
+const uint16_t OTA_TASK_STACK = 2048;
+const uint16_t BUZZER_TASK_STACK = 1024;
+#define CREATE_TASK(fn, name, stack, prio, handle, core) xTaskCreatePinnedToCore(fn, name, stack, NULL, prio, handle, core)
 
 AudioFeedback audioFeedback([](uint16_t frequency) { ledcWriteTone(2, frequency); });
 void drawStatusUi(uint32_t nowMs);
@@ -250,10 +266,10 @@ void drawStatusUi(uint32_t nowMs) {
   u8g2.sendBuffer();
 }
 
-void handleIncomingData()
-{
-  Comms::loop();
-}
+// void handleIncomingData()
+// {
+//   Comms::loop();
+// }
 
 void action()
 {
@@ -262,6 +278,252 @@ void action()
 
   }
 }
+
+const unsigned long HANDSHAKE_COOLDOWN = 500;
+const char *DRONE_ID = "BulkyT10";
+const uint32_t PACKET_MAGIC = 0xA1B2C3D4;
+Comms::ThrustCommand command = {PACKET_MAGIC, 1000, 0, 0, 0, false};
+static uint8_t iliteMac[6] = {0};
+uint8_t selfMac[6];
+static uint8_t commandPeer[6] = {0};
+static bool ilitePaired = false;
+static bool commandPeerSet = false;
+static uint32_t lastCommandTimeMs = 0;
+unsigned long lastDiscoveryTime = 0;
+
+struct LinkStateSnapshot {
+    bool ilitePaired = false;
+    bool commandPeerSet = false;
+    uint8_t iliteMac[6] = {0};
+    uint8_t commandPeer[6] = {0};
+    uint32_t lastCommandTimeMs = 0;
+};
+
+const unsigned long CONNECTION_TIMEOUT = 1000;
+
+static inline LinkStateSnapshot clearLinkState()
+{
+    LinkStateSnapshot previous;
+    portENTER_CRITICAL(&commsStateMux);
+    previous.ilitePaired = ilitePaired;
+    previous.commandPeerSet = commandPeerSet;
+    memcpy(previous.iliteMac, iliteMac, sizeof(iliteMac));
+    memcpy(previous.commandPeer, commandPeer, sizeof(commandPeer));
+    previous.lastCommandTimeMs = lastCommandTimeMs;
+    ilitePaired = false;
+    commandPeerSet = false;
+    memset(iliteMac, 0, sizeof(iliteMac));
+    memset(commandPeer, 0, sizeof(commandPeer));
+    lastCommandTimeMs = 0;
+    portEXIT_CRITICAL(&commsStateMux);
+    return previous;
+}
+
+static inline LinkStateSnapshot loadLinkStateSnapshot()
+{
+    LinkStateSnapshot snapshot;
+    portENTER_CRITICAL(&commsStateMux);
+    snapshot.ilitePaired = ilitePaired;
+    snapshot.commandPeerSet = commandPeerSet;
+    memcpy(snapshot.iliteMac, iliteMac, sizeof(iliteMac));
+    memcpy(snapshot.commandPeer, commandPeer, sizeof(commandPeer));
+    snapshot.lastCommandTimeMs = lastCommandTimeMs;
+    portEXIT_CRITICAL(&commsStateMux);
+    return snapshot;
+}
+
+void monitorConnection() {
+    LinkStateSnapshot state = loadLinkStateSnapshot();
+    if (!state.ilitePaired)
+        return;
+
+    uint32_t now = millis();
+    if (state.lastCommandTimeMs > 0 && now - state.lastCommandTimeMs > CONNECTION_TIMEOUT)
+    {
+        LinkStateSnapshot cleared = clearLinkState();
+        if (cleared.ilitePaired)
+        {
+            esp_now_del_peer(cleared.iliteMac);
+        }
+    }
+}
+
+
+static inline void storeCommandSnapshotFromISR(const Comms::ThrustCommand &value)
+{
+    portENTER_CRITICAL_ISR(&commandMux);
+    command = value;
+    portEXIT_CRITICAL_ISR(&commandMux);
+}
+
+static inline void setLastCommandTimeMs(uint32_t value)
+{
+    portENTER_CRITICAL(&commsStateMux);
+    lastCommandTimeMs = value;
+    portEXIT_CRITICAL(&commsStateMux);
+}
+
+static inline void setLastCommandTimeMsFromISR(uint32_t value)
+{
+    portENTER_CRITICAL_ISR(&commsStateMux);
+    lastCommandTimeMs = value;
+    portEXIT_CRITICAL_ISR(&commsStateMux);
+}
+
+static inline void setIlitePeerFromISR(const uint8_t *mac)
+{
+    portENTER_CRITICAL_ISR(&commsStateMux);
+    memcpy(iliteMac, mac, sizeof(iliteMac));
+    ilitePaired = true;
+    portEXIT_CRITICAL_ISR(&commsStateMux);
+}
+
+static inline bool copyIliteMacFromISR(uint8_t dest[6])
+{
+    portENTER_CRITICAL_ISR(&commsStateMux);
+    bool paired = ilitePaired;
+    if (paired)
+    {
+        memcpy(dest, iliteMac, sizeof(iliteMac));
+    }
+    portEXIT_CRITICAL_ISR(&commsStateMux);
+    return paired;
+}
+
+static inline bool updateCommandPeerFromISR(const uint8_t *mac)
+{
+    portENTER_CRITICAL_ISR(&commsStateMux);
+    bool changed = !commandPeerSet || memcmp(commandPeer, mac, sizeof(commandPeer)) != 0;
+    if (changed)
+    {
+        memcpy(commandPeer, mac, sizeof(commandPeer));
+        commandPeerSet = true;
+    }
+    portEXIT_CRITICAL_ISR(&commsStateMux);
+    return changed;
+}
+
+static inline Comms::ThrustCommand loadCommandSnapshot()
+{
+    portENTER_CRITICAL(&commandMux);
+    Comms::ThrustCommand snapshot = command;
+    portEXIT_CRITICAL(&commandMux);
+    return snapshot;
+}
+
+void CommTask(void *pvParameters) {
+    TickType_t lastWake = xTaskGetTickCount();
+    const TickType_t interval = pdMS_TO_TICKS(5);
+    while (true) {
+
+        monitorConnection();
+        LinkStateSnapshot state = loadLinkStateSnapshot();
+        if (!state.ilitePaired && millis() - lastDiscoveryTime > 1000) {
+            Comms::IdentityMessage msg = {};
+            msg.type = Comms::DRONE_IDENTITY;
+            strncpy(msg.identity, DRONE_ID, sizeof(msg.identity));
+            memcpy(msg.mac, selfMac, 6);
+            esp_now_send(Comms::BroadcastMac, (uint8_t *)&msg, sizeof(msg));
+            lastDiscoveryTime = millis();
+        }
+        vTaskDelayUntil(&lastWake, interval); // ~200 Hz for responsiveness
+    }
+}
+unsigned long lastHandshakeSent = 0;
+void onReceive(const uint8_t *mac, const uint8_t *incomingData, int len)
+{
+    if (len == sizeof(Comms::IdentityMessage))
+    {
+        Comms::IdentityMessage msg;
+        memcpy(&msg, incomingData, sizeof(msg));
+        unsigned long now = millis();
+        if (msg.type == Comms::SCAN_REQUEST)
+        {
+            if (now - lastHandshakeSent > HANDSHAKE_COOLDOWN)
+            {
+                if (!esp_now_is_peer_exist(mac))
+                {
+                    esp_now_peer_info_t peerInfo = {};
+                    memcpy(peerInfo.peer_addr, mac, 6);
+                    peerInfo.channel = 0;
+                    peerInfo.encrypt = false;
+                    esp_now_add_peer(&peerInfo);
+                }
+                Comms::IdentityMessage resp = {};
+                resp.type = Comms::DRONE_IDENTITY;
+                strncpy(resp.identity, DRONE_ID, sizeof(resp.identity));
+                memcpy(resp.mac, selfMac, 6);
+                esp_now_send(mac, (uint8_t *)&resp, sizeof(resp));
+                lastHandshakeSent = now;
+            }
+        }
+
+
+        else if (msg.type == Comms::ILITE_IDENTITY)
+        {
+            uint8_t existingMac[6];
+            bool wasPaired = copyIliteMacFromISR(existingMac);
+            bool isNewPeer = !wasPaired || memcmp(existingMac, msg.mac, sizeof(existingMac)) != 0;
+            if (isNewPeer)
+            {
+                setIlitePeerFromISR(msg.mac);
+                updateCommandPeerFromISR(msg.mac);
+            }
+            esp_now_peer_info_t peerInfo = {};
+            memcpy(peerInfo.peer_addr, msg.mac, 6);
+            peerInfo.channel = 0;
+            peerInfo.encrypt = false;
+            if (!esp_now_is_peer_exist(msg.mac))
+            {
+                esp_now_add_peer(&peerInfo);
+            }
+            Comms::IdentityMessage ack = {};
+            ack.type = Comms::DRONE_ACK;
+            strncpy(ack.identity, DRONE_ID, sizeof(ack.identity));
+            memcpy(ack.mac, selfMac, 6);
+            esp_now_send(msg.mac, (uint8_t *)&ack, sizeof(ack));
+            lastHandshakeSent = now;
+            if (Buzzer_Pin >= 0 && isNewPeer)
+            {
+                sound(2000); // short beep on pairing
+            }
+        }
+
+        return;
+    }
+
+    if (len == sizeof(Comms::ThrustCommand))
+    {
+        Comms::ThrustCommand incoming;
+        memcpy(&incoming, incomingData, sizeof(incoming));
+
+        // Ignore commands from unknown devices or with wrong magic
+        uint8_t pairedMac[6];
+        bool paired = copyIliteMacFromISR(pairedMac);
+        if (!paired || memcmp(mac, pairedMac, 6) != 0 || incoming.magic != PACKET_MAGIC)
+        {
+            return;
+        }
+
+        storeCommandSnapshotFromISR(incoming);
+        uint32_t nowMs = xTaskGetTickCountFromISR() * portTICK_PERIOD_MS;
+        setLastCommandTimeMsFromISR(nowMs);
+
+        bool peerChanged = updateCommandPeerFromISR(mac);
+        if (peerChanged)
+        {
+            esp_now_peer_info_t peerInfo = {};
+            memcpy(peerInfo.peer_addr, mac, 6);
+            peerInfo.channel = 0;
+            peerInfo.encrypt = false;
+            if (!esp_now_is_peer_exist(mac))
+            {
+                esp_now_add_peer(&peerInfo);
+            }
+        }
+    }
+}
+
 
 void setup() {
   u8g2.begin();
@@ -403,6 +665,16 @@ void setup() {
                               &uiTaskHandle, 0) != pdPASS) {
     Serial.println("[SYS] Failed to start UI task");
   }
+
+      CREATE_TASK(
+        CommTask,
+        "CommTask",
+        COMM_TASK_STACK,
+        3,
+        NULL,
+        0 // Pin to core 0 for Wi-Fi operations
+    );
+
 }
 
 
@@ -451,7 +723,6 @@ void controlTask(void *param)
     uint32_t now = millis();
     ArduinoOTA.handle();
     audioFeedback.loop(now);
-    handleIncomingData();
     vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
