@@ -280,9 +280,8 @@ void action()
 }
 
 const unsigned long HANDSHAKE_COOLDOWN = 500;
-const char *DRONE_ID = "BulkyT10";
-const uint32_t PACKET_MAGIC = 0xA1B2C3D4;
-Comms::ThrustCommand command = {PACKET_MAGIC, 1000, 0, 0, 0, false};
+const char *DRONE_ID = "Bulky";
+Comms::ControlPacket command = {0};
 static uint8_t iliteMac[6] = {0};
 uint8_t selfMac[6];
 static uint8_t commandPeer[6] = {0};
@@ -349,7 +348,7 @@ void monitorConnection() {
 }
 
 
-static inline void storeCommandSnapshotFromISR(const Comms::ThrustCommand &value)
+static inline void storeCommandSnapshotFromISR(const Comms::ControlPacket &value)
 {
     portENTER_CRITICAL_ISR(&commandMux);
     command = value;
@@ -403,10 +402,10 @@ static inline bool updateCommandPeerFromISR(const uint8_t *mac)
     return changed;
 }
 
-static inline Comms::ThrustCommand loadCommandSnapshot()
+static inline Comms::ControlPacket loadCommandSnapshot()
 {
     portENTER_CRITICAL(&commandMux);
-    Comms::ThrustCommand snapshot = command;
+    Comms::ControlPacket snapshot = command;
     portEXIT_CRITICAL(&commandMux);
     return snapshot;
 }
@@ -492,15 +491,15 @@ void onReceive(const uint8_t *mac, const uint8_t *incomingData, int len)
         return;
     }
 
-    if (len == sizeof(Comms::ThrustCommand))
+    if (len == sizeof(Comms::ControlPacket))
     {
-        Comms::ThrustCommand incoming;
+        Comms::ControlPacket incoming;
         memcpy(&incoming, incomingData, sizeof(incoming));
 
-        // Ignore commands from unknown devices or with wrong magic
+        // Ignore commands from unknown devices
         uint8_t pairedMac[6];
         bool paired = copyIliteMacFromISR(pairedMac);
-        if (!paired || memcmp(mac, pairedMac, 6) != 0 || incoming.magic != PACKET_MAGIC)
+        if (!paired || memcmp(mac, pairedMac, 6) != 0)
         {
             return;
         }

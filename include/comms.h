@@ -4,13 +4,11 @@
 #include <esp_now.h>
 
 namespace Comms {
-struct ThrustCommand {
-    uint32_t magic;
-    uint16_t throttle;
-    int8_t pitchAngle;
-    int8_t rollAngle;
-    int8_t yawAngle;
-    bool arm_motors;
+struct ControlPacket {
+    uint8_t replyIndex;
+    int8_t speed;
+    uint8_t motionState;
+    uint8_t buttonStates[3];
 } __attribute__((packed));
 
 struct TelemetryPacket {
@@ -19,6 +17,7 @@ struct TelemetryPacket {
   float pitchCorrection, rollCorrection, yawCorrection; // PID outputs
   uint16_t throttle;             // Current throttle command
   int8_t pitchAngle, rollAngle, yawAngle; // Commanded angles
+  float altitude;                // Estimated altitude
   float verticalAcc;             // Vertical acceleration in m/s^2
   uint32_t commandAge;           // Age of last command in ms
 } __attribute__((packed));
@@ -38,7 +37,7 @@ struct IdentityMessage {
 
 bool init(const char *ssid, const char *password, int tcpPort);
 bool init(const char *ssid, const char *password, int tcpPort, esp_now_recv_cb_t recvCallback);
-bool receiveCommand(ThrustCommand &cmd);
+bool receiveCommand(ControlPacket &cmd);
 bool paired();
 extern const uint8_t BroadcastMac[6];
 }
