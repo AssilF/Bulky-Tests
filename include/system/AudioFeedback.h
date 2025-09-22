@@ -22,6 +22,11 @@ class AudioFeedback {
     TargetSelected,
     TargetCleared,
     TelemetryTimeout,
+    PairingPulse,
+    MovementStart,
+    MovementStop,
+    PeerConnected,
+    PeerDisconnected,
   };
 
   explicit AudioFeedback(std::function<void(uint16_t)> toneWriter);

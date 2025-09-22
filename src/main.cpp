@@ -153,6 +153,7 @@ void sensorTask(void *param);
 void controlTask(void *param);
 void actuatorTask(void *param);
 void uiTask(void *param);
+void updateLinkAudioFeedback(uint32_t nowMs);
 
 const uint32_t CPU_FREQ_MHZ = 240;
 const uint16_t FAST_TASK_STACK = 4096;
@@ -226,38 +227,73 @@ void drawStatusUi(uint32_t nowMs) {
   lastRenderMs = nowMs;
 
   ControlState state = getControlStateSnapshot();
+  LinkStateSnapshot link = loadLinkStateSnapshot();
+  bool paired = link.ilitePaired;
+  bool moving = state.speed > 0 && state.motion != STOP;
+
   u8g2.clearBuffer();
   u8g2.setFont(u8g2_font_6x10_tf);
 
   u8g2.setCursor(0, 10);
-  u8g2.print("Echo listener ready");
+  u8g2.print("Bulky status");
 
   u8g2.setCursor(0, 22);
-  u8g2.print("SSID: ");
-  u8g2.print(WIFI_SSID);
+  if (paired) {
+    u8g2.print("Link: ILITE ");
+    auto printHexByte = [&](uint8_t value) {
+      if (value < 0x10) {
+        u8g2.print('0');
+      }
+      u8g2.print(value, HEX);
+    };
+    printHexByte(link.iliteMac[4]);
+    u8g2.print(':');
+    printHexByte(link.iliteMac[5]);
+  } else {
+    u8g2.print("Link: Searching");
+    if (((nowMs / 500) % 2) == 0) {
+      u8g2.print("...");
+    }
+  }
 
   u8g2.setCursor(0, 32);
-  u8g2.print("Motion: 0x");
-  u8g2.print(state.motion, HEX);
+  if (paired && link.lastCommandTimeMs != 0) {
+    uint32_t ageMs = nowMs >= link.lastCommandTimeMs
+                         ? nowMs - link.lastCommandTimeMs
+                         : (0xFFFFFFFFu - link.lastCommandTimeMs + nowMs + 1);
+    u8g2.print("Cmd age: ");
+    u8g2.print(ageMs / 1000);
+    u8g2.print('s');
+  } else {
+    u8g2.print("Cmd age: --");
+  }
 
   u8g2.setCursor(0, 42);
+  u8g2.print("Drive: ");
+  if (moving) {
+    u8g2.print("Moving v");
+    u8g2.print(state.speed);
+  } else {
+    u8g2.print("Idle");
+  }
+
+  u8g2.setCursor(0, 52);
   u8g2.print("Pump: ");
   u8g2.print(state.pump ? "ON" : "OFF");
   u8g2.print(" Flash: ");
   u8g2.print(state.flash ? "ON" : "OFF");
 
-  u8g2.setCursor(0, 52);
+  u8g2.setCursor(0, 62);
   u8g2.print("Buzzer: ");
   u8g2.print(state.buzzer ? "ON" : "OFF");
 
-  u8g2.setCursor(0, 62);
   if (state.cameraMode) {
-    u8g2.print("Camera yaw/pitch: ");
+    u8g2.print(" Camera ");
     u8g2.print(state.cameraYaw);
     u8g2.print('/');
     u8g2.print(state.cameraPitch);
   } else {
-    u8g2.print("Crane yaw/pitch: ");
+    u8g2.print(" Crane ");
     u8g2.print(state.craneYaw);
     u8g2.print('/');
     u8g2.print(state.cranePitch);
@@ -345,6 +381,40 @@ void monitorConnection() {
             esp_now_del_peer(cleared.iliteMac);
         }
     }
+}
+
+
+void updateLinkAudioFeedback(uint32_t nowMs) {
+  static bool wasPaired = false;
+  static uint32_t lastPairingToneMs = 0;
+  static bool pairingTonePrimed = true;
+  constexpr uint32_t kPairingToneIntervalMs = 2500;
+
+  LinkStateSnapshot linkState = loadLinkStateSnapshot();
+  bool paired = linkState.ilitePaired;
+
+  if (paired) {
+    if (!wasPaired) {
+      audioFeedback.playPattern(AudioFeedback::Pattern::PeerConnected);
+    }
+    wasPaired = true;
+    pairingTonePrimed = true;
+    lastPairingToneMs = nowMs;
+    return;
+  }
+
+  if (wasPaired) {
+    audioFeedback.playPattern(AudioFeedback::Pattern::PeerDisconnected);
+    wasPaired = false;
+    pairingTonePrimed = true;
+    lastPairingToneMs = nowMs;
+  }
+
+  if (pairingTonePrimed || nowMs - lastPairingToneMs >= kPairingToneIntervalMs) {
+    audioFeedback.playPattern(AudioFeedback::Pattern::PairingPulse);
+    pairingTonePrimed = false;
+    lastPairingToneMs = nowMs;
+  }
 }
 
 
@@ -482,10 +552,6 @@ void onReceive(const uint8_t *mac, const uint8_t *incomingData, int len)
             memcpy(ack.mac, selfMac, 6);
             esp_now_send(msg.mac, (uint8_t *)&ack, sizeof(ack));
             lastHandshakeSent = now;
-            if (Buzzer_Pin >= 0 && isNewPeer)
-            {
-                sound(2000); // short beep on pairing
-            }
         }
 
         return;
@@ -721,6 +787,7 @@ void controlTask(void *param)
   for (;;) {
     uint32_t now = millis();
     ArduinoOTA.handle();
+    updateLinkAudioFeedback(now);
     audioFeedback.loop(now);
     vTaskDelay(pdMS_TO_TICKS(10));
   }
@@ -731,6 +798,13 @@ void actuatorTask(void *param)
   (void)param;
   for (;;) {
     ControlState state = getControlStateSnapshot();
+    static bool wasMoving = false;
+    bool moving = state.speed > 0 && state.motion != STOP;
+    if (moving != wasMoving) {
+      audioFeedback.playPattern(moving ? AudioFeedback::Pattern::MovementStart
+                                       : AudioFeedback::Pattern::MovementStop);
+      wasMoving = moving;
+    }
     projectMotion(state.motion, state.speed);
     pump(state.pump ? 4096 : 0);
     flash(state.flash ? 4096 : 0);
