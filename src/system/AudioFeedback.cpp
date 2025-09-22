@@ -27,6 +27,25 @@ constexpr AudioFeedback::Segment kTargetClearedPattern[] = {
 constexpr AudioFeedback::Segment kTelemetryTimeoutPattern[] = {
     {500, 500, 0},
 };
+constexpr AudioFeedback::Segment kPairingPulsePattern[] = {
+    {880, 140, 0},
+};
+constexpr AudioFeedback::Segment kMovementStartPattern[] = {
+    {720, 80, 30},
+    {1180, 130, 0},
+};
+constexpr AudioFeedback::Segment kMovementStopPattern[] = {
+    {520, 120, 40},
+    {320, 160, 0},
+};
+constexpr AudioFeedback::Segment kPeerConnectedPattern[] = {
+    {940, 100, 20},
+    {1420, 150, 0},
+};
+constexpr AudioFeedback::Segment kPeerDisconnectedPattern[] = {
+    {620, 140, 20},
+    {360, 200, 0},
+};
 
 const AudioFeedback::Segment *patternData(AudioFeedback::Pattern pattern, size_t &length) {
   switch (pattern) {
@@ -51,6 +70,21 @@ const AudioFeedback::Segment *patternData(AudioFeedback::Pattern pattern, size_t
     case AudioFeedback::Pattern::TelemetryTimeout:
       length = sizeof(kTelemetryTimeoutPattern) / sizeof(kTelemetryTimeoutPattern[0]);
       return kTelemetryTimeoutPattern;
+    case AudioFeedback::Pattern::PairingPulse:
+      length = sizeof(kPairingPulsePattern) / sizeof(kPairingPulsePattern[0]);
+      return kPairingPulsePattern;
+    case AudioFeedback::Pattern::MovementStart:
+      length = sizeof(kMovementStartPattern) / sizeof(kMovementStartPattern[0]);
+      return kMovementStartPattern;
+    case AudioFeedback::Pattern::MovementStop:
+      length = sizeof(kMovementStopPattern) / sizeof(kMovementStopPattern[0]);
+      return kMovementStopPattern;
+    case AudioFeedback::Pattern::PeerConnected:
+      length = sizeof(kPeerConnectedPattern) / sizeof(kPeerConnectedPattern[0]);
+      return kPeerConnectedPattern;
+    case AudioFeedback::Pattern::PeerDisconnected:
+      length = sizeof(kPeerDisconnectedPattern) / sizeof(kPeerDisconnectedPattern[0]);
+      return kPeerDisconnectedPattern;
   }
   length = 0;
   return nullptr;
