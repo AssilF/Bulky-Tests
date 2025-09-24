@@ -175,7 +175,7 @@ AudioFeedback audioFeedback([](uint16_t frequency) { ledcWriteTone(2, frequency)
 
 namespace {
 void onEspNowPacket(const uint8_t *, const uint8_t *, int) {
-  audioFeedback.playPattern(AudioFeedback::Pattern::PacketReceived);
+  
 }
 }  // namespace
 

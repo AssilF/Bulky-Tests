@@ -244,15 +244,19 @@ void processKeepalive(const uint8_t *mac, const Packet &packet, uint32_t nowMs) 
 void handlePacket(const uint8_t *mac, const Packet &packet, uint32_t nowMs) {
     switch (packet.type) {
     case MessageType::MSG_PAIR_REQ:
+ 
         processPairRequest(mac, packet, nowMs);
         break;
     case MessageType::MSG_IDENTITY_REPLY:
+
         processIdentityReply(mac, packet, nowMs);
         break;
     case MessageType::MSG_PAIR_CONFIRM:
+
         processPairConfirm(mac, packet, nowMs);
         break;
     case MessageType::MSG_PAIR_ACK:
+
         processPairAck(mac, packet, nowMs);
         break;
     case MessageType::MSG_KEEPALIVE:
