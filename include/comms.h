@@ -4,41 +4,91 @@
 #include <esp_now.h>
 
 namespace Comms {
+
+enum class DeviceRole : uint8_t {
+    Controller = 0,
+    Controlled = 1,
+};
+
+#ifndef DEVICE_ROLE
+#define DEVICE_ROLE Comms::DeviceRole::Controlled
+#endif
+
+enum class MessageType : uint8_t {
+    MSG_PAIR_REQ = 0x01,
+    MSG_IDENTITY_REPLY = 0x02,
+    MSG_PAIR_CONFIRM = 0x03,
+    MSG_PAIR_ACK = 0x04,
+    MSG_KEEPALIVE = 0x05,
+};
+
+constexpr uint8_t PROTOCOL_VERSION = 1;
+constexpr uint8_t WIFI_CHANNEL = 1;
+constexpr uint32_t BROADCAST_INTERVAL_MS = 500;
+constexpr uint32_t DEVICE_TTL_MS = 5000;
+constexpr uint32_t LINK_TIMEOUT_MS = 3000;
+
+#pragma pack(push, 1)
+struct Identity {
+    char deviceType[12];
+    char platform[16];
+    char customId[32];
+    uint8_t mac[6];
+};
+
+struct Packet {
+    uint8_t version;
+    MessageType type;
+    Identity id;
+    uint32_t monotonicMs;
+    uint32_t reserved;
+};
+
 struct ControlPacket {
     uint8_t replyIndex;
     int8_t speed;
     uint8_t motionState;
     uint8_t buttonStates[3];
-} __attribute__((packed));
+};
+#pragma pack(pop)
 
-struct TelemetryPacket {
-  uint32_t magic;                // Should be PACKET_MAGIC
-  float pitch, roll, yaw;        // Orientation in degrees
-  float pitchCorrection, rollCorrection, yawCorrection; // PID outputs
-  uint16_t throttle;             // Current throttle command
-  int8_t pitchAngle, rollAngle, yawAngle; // Commanded angles
-  float altitude;                // Estimated altitude
-  float verticalAcc;             // Vertical acceleration in m/s^2
-  uint32_t commandAge;           // Age of last command in ms
-} __attribute__((packed));
-
-enum PairingType : uint8_t {
-    SCAN_REQUEST = 0x01,
-    DRONE_IDENTITY = 0x02,
-    ILITE_IDENTITY = 0x03,
-    DRONE_ACK = 0x04,
+struct DiscoveryInfo {
+    Identity identity;
+    uint32_t lastSeenMs;
 };
 
-struct IdentityMessage {
-    uint8_t type;
-    char identity[16];
-    uint8_t mac[6];
-} __attribute__((packed));
+struct LinkStatus {
+    bool paired = false;
+    Identity peerIdentity{};
+    uint8_t peerMac[6] = {0};
+    uint32_t lastActivityMs = 0;
+    uint32_t lastCommandMs = 0;
+};
+
+using TargetSelector = int (*)(const DiscoveryInfo *entries, size_t count);
+
+void setRole(DeviceRole role);
+DeviceRole getRole();
+void setPlatform(const char *platformName);
+void setCustomId(const char *customId);
+void setDeviceTypeOverride(const char *deviceTypeName);
+void setTargetSelector(TargetSelector selector);
+
+void fillSelfIdentity(Identity &outIdentity);
+String macToString(const uint8_t mac[6]);
+bool macEqual(const uint8_t lhs[6], const uint8_t rhs[6]);
+bool ensurePeer(const uint8_t mac[6]);
 
 bool init(const char *ssid, const char *password, int tcpPort);
 bool init(const char *ssid, const char *password, int tcpPort, esp_now_recv_cb_t recvCallback);
-bool receiveCommand(ControlPacket &cmd);
+void loop();
+
+bool receiveCommand(ControlPacket &cmd, uint32_t *timestampMs = nullptr);
+uint32_t lastCommandTimestamp();
+LinkStatus getLinkStatus();
 bool paired();
+
 extern const uint8_t BroadcastMac[6];
-}
+
+} // namespace Comms
 
