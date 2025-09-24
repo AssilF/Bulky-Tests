@@ -240,6 +240,9 @@ void sendPairRequest(uint32_t nowMs) {
     if (!g_initialized) {
         return;
     }
+    if (paired()) {
+        return;
+    }
     if (nowMs - g_lastBroadcastMs < BROADCAST_INTERVAL_MS) {
         return;
     }
