@@ -7,8 +7,6 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
-#include <cstring>
-
 #include <U8g2lib.h>
 
 #include "sensors.h"
@@ -17,12 +15,9 @@
 #include "main.h"
 #include "comms.h"
 #include "system/AudioFeedback.h"
+#include "system/LinkStateManager.h"
 
-// Add missing commsStateMux definition
-portMUX_TYPE commsStateMux = portMUX_INITIALIZER_UNLOCKED;
-
-// Add missing commandMux definition
-portMUX_TYPE commandMux = portMUX_INITIALIZER_UNLOCKED;
+static LinkStateManager linkStateManager;
 
 U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0);
 //this is the13th of october, my laptop apparently cannot even keep up with my rate of writing :D:D:D:
@@ -174,53 +169,6 @@ const int TCP_PORT = 8000;
 const char *DEVICE_PLATFORM = "Bulky";
 const char *DEVICE_CUSTOM_ID = "Bulky-A10";
 
-Comms::ControlPacket command = {0};
-
-struct LinkStateSnapshot {
-    bool paired = false;
-    Comms::Identity peerIdentity{};
-    uint8_t peerMac[6] = {0};
-    uint32_t lastActivityMs = 0;
-    uint32_t lastCommandTimeMs = 0;
-};
-
-static LinkStateSnapshot linkStateSnapshot{};
-
-static inline void storeLinkState(const Comms::LinkStatus &status)
-{
-    portENTER_CRITICAL(&commsStateMux);
-    linkStateSnapshot.paired = status.paired;
-    linkStateSnapshot.peerIdentity = status.peerIdentity;
-    memcpy(linkStateSnapshot.peerMac, status.peerMac, sizeof(linkStateSnapshot.peerMac));
-    linkStateSnapshot.lastActivityMs = status.lastActivityMs;
-    linkStateSnapshot.lastCommandTimeMs = status.lastCommandMs;
-    portEXIT_CRITICAL(&commsStateMux);
-}
-
-static inline LinkStateSnapshot loadLinkStateSnapshot()
-{
-    LinkStateSnapshot snapshot;
-    portENTER_CRITICAL(&commsStateMux);
-    snapshot = linkStateSnapshot;
-    portEXIT_CRITICAL(&commsStateMux);
-    return snapshot;
-}
-
-static inline void storeCommandSnapshot(const Comms::ControlPacket &value)
-{
-    portENTER_CRITICAL(&commandMux);
-    command = value;
-    portEXIT_CRITICAL(&commandMux);
-}
-
-static inline Comms::ControlPacket loadCommandSnapshot()
-{
-    portENTER_CRITICAL(&commandMux);
-    Comms::ControlPacket snapshot = command;
-    portEXIT_CRITICAL(&commandMux);
-    return snapshot;
-}
-
 void resetControlState()
 {
   if (controlStateMutex != nullptr) {
@@ -276,7 +224,7 @@ void drawStatusUi(uint32_t nowMs) {
   lastRenderMs = nowMs;
 
   ControlState state = getControlStateSnapshot();
-  LinkStateSnapshot link = loadLinkStateSnapshot();
+  LinkStateSnapshot link = linkStateManager.linkSnapshot();
   bool paired = link.paired;
   bool moving = state.speed > 0 && state.motion != STOP;
 
@@ -372,7 +320,7 @@ void updateLinkAudioFeedback(uint32_t nowMs) {
   static bool pairingTonePrimed = true;
   constexpr uint32_t kPairingToneIntervalMs = 2500;
 
-  LinkStateSnapshot linkState = loadLinkStateSnapshot();
+  LinkStateSnapshot linkState = linkStateManager.linkSnapshot();
   bool paired = linkState.paired;
 
   if (paired) {
@@ -406,13 +354,13 @@ void CommTask(void *pvParameters) {
         Comms::loop();
 
         Comms::LinkStatus status = Comms::getLinkStatus();
-        storeLinkState(status);
+        linkStateManager.updateStatus(status);
 
         Comms::ControlPacket latest = {};
         uint32_t commandTimestamp = 0;
         bool hasCommand = Comms::receiveCommand(latest, &commandTimestamp);
         if (hasCommand && status.paired) {
-            storeCommandSnapshot(latest);
+            linkStateManager.updateCommand(latest, commandTimestamp);
         }
 
         vTaskDelayUntil(&lastWake, interval);
