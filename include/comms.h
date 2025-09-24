@@ -19,7 +19,6 @@ enum class MessageType : uint8_t {
     MSG_IDENTITY_REPLY = 0x02,
     MSG_PAIR_CONFIRM = 0x03,
     MSG_PAIR_ACK = 0x04,
-    MSG_KEEPALIVE = 0x05,
 };
 
 constexpr uint8_t PROTOCOL_VERSION = 1;
