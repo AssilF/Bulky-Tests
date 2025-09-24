@@ -164,7 +164,42 @@ const uint16_t OTA_TASK_STACK = 2048;
 const uint16_t BUZZER_TASK_STACK = 1024;
 #define CREATE_TASK(fn, name, stack, prio, handle, core) xTaskCreatePinnedToCore(fn, name, stack, NULL, prio, handle, core)
 
+
+const unsigned long HANDSHAKE_COOLDOWN = 500;
+const char *DRONE_ID = "BulkyT10";
+Comms::ControlPacket command = {0};
+static uint8_t iliteMac[6] = {0};
+uint8_t selfMac[6];
+static uint8_t commandPeer[6] = {0};
+static bool ilitePaired = false;
+static bool commandPeerSet = false;
+static uint32_t lastCommandTimeMs = 0;
+unsigned long lastDiscoveryTime = 0;
+
 AudioFeedback audioFeedback([](uint16_t frequency) { ledcWriteTone(2, frequency); });
+
+// LinkStateSnapshot struct and loadLinkStateSnapshot function moved here for global visibility
+struct LinkStateSnapshot {
+    bool ilitePaired = false;
+    bool commandPeerSet = false;
+    uint8_t iliteMac[6] = {0};
+    uint8_t commandPeer[6] = {0};
+    uint32_t lastCommandTimeMs = 0;
+};
+
+static inline LinkStateSnapshot loadLinkStateSnapshot()
+{
+    LinkStateSnapshot snapshot;
+    portENTER_CRITICAL(&commsStateMux);
+    snapshot.ilitePaired = ilitePaired;
+    snapshot.commandPeerSet = commandPeerSet;
+    memcpy(snapshot.iliteMac, iliteMac, sizeof(iliteMac));
+    memcpy(snapshot.commandPeer, commandPeer, sizeof(commandPeer));
+    snapshot.lastCommandTimeMs = lastCommandTimeMs;
+    portEXIT_CRITICAL(&commsStateMux);
+    return snapshot;
+}
+
 void drawStatusUi(uint32_t nowMs);
 
 // ==================== Network configuration ====================
@@ -226,9 +261,10 @@ void drawStatusUi(uint32_t nowMs) {
   }
   lastRenderMs = nowMs;
 
+  
   ControlState state = getControlStateSnapshot();
-  LinkStateSnapshot link = loadLinkStateSnapshot();
-  bool paired = link.ilitePaired;
+  LinkStateSnapshot linkState = loadLinkStateSnapshot();
+  bool paired = linkState.ilitePaired;
   bool moving = state.speed > 0 && state.motion != STOP;
 
   u8g2.clearBuffer();
@@ -246,9 +282,9 @@ void drawStatusUi(uint32_t nowMs) {
       }
       u8g2.print(value, HEX);
     };
-    printHexByte(link.iliteMac[4]);
+    printHexByte(linkState.iliteMac[4]);
     u8g2.print(':');
-    printHexByte(link.iliteMac[5]);
+    printHexByte(linkState.iliteMac[5]);
   } else {
     u8g2.print("Link: Searching");
     if (((nowMs / 500) % 2) == 0) {
@@ -257,10 +293,10 @@ void drawStatusUi(uint32_t nowMs) {
   }
 
   u8g2.setCursor(0, 32);
-  if (paired && link.lastCommandTimeMs != 0) {
-    uint32_t ageMs = nowMs >= link.lastCommandTimeMs
-                         ? nowMs - link.lastCommandTimeMs
-                         : (0xFFFFFFFFu - link.lastCommandTimeMs + nowMs + 1);
+  if (paired && linkState.lastCommandTimeMs != 0) {
+    uint32_t ageMs = nowMs >= linkState.lastCommandTimeMs
+                         ? nowMs - linkState.lastCommandTimeMs
+                         : (0xFFFFFFFFu - linkState.lastCommandTimeMs + nowMs + 1);
     u8g2.print("Cmd age: ");
     u8g2.print(ageMs / 1000);
     u8g2.print('s');
@@ -315,24 +351,7 @@ void action()
   }
 }
 
-const unsigned long HANDSHAKE_COOLDOWN = 500;
-const char *DRONE_ID = "Bulky";
-Comms::ControlPacket command = {0};
-static uint8_t iliteMac[6] = {0};
-uint8_t selfMac[6];
-static uint8_t commandPeer[6] = {0};
-static bool ilitePaired = false;
-static bool commandPeerSet = false;
-static uint32_t lastCommandTimeMs = 0;
-unsigned long lastDiscoveryTime = 0;
 
-struct LinkStateSnapshot {
-    bool ilitePaired = false;
-    bool commandPeerSet = false;
-    uint8_t iliteMac[6] = {0};
-    uint8_t commandPeer[6] = {0};
-    uint32_t lastCommandTimeMs = 0;
-};
 
 const unsigned long CONNECTION_TIMEOUT = 1000;
 
@@ -354,18 +373,6 @@ static inline LinkStateSnapshot clearLinkState()
     return previous;
 }
 
-static inline LinkStateSnapshot loadLinkStateSnapshot()
-{
-    LinkStateSnapshot snapshot;
-    portENTER_CRITICAL(&commsStateMux);
-    snapshot.ilitePaired = ilitePaired;
-    snapshot.commandPeerSet = commandPeerSet;
-    memcpy(snapshot.iliteMac, iliteMac, sizeof(iliteMac));
-    memcpy(snapshot.commandPeer, commandPeer, sizeof(commandPeer));
-    snapshot.lastCommandTimeMs = lastCommandTimeMs;
-    portEXIT_CRITICAL(&commsStateMux);
-    return snapshot;
-}
 
 void monitorConnection() {
     LinkStateSnapshot state = loadLinkStateSnapshot();

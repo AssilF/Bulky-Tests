@@ -13,7 +13,7 @@ static void onDataRecv(const uint8_t* mac, const uint8_t* incomingData, int len)
         if (msg->type == SCAN_REQUEST) {
             IdentityMessage resp{};
             resp.type = DRONE_IDENTITY;
-            strncpy(resp.identity, "DRONEGAZE", sizeof(resp.identity));
+            strncpy(resp.identity, "Bulky", sizeof(resp.identity));
             WiFi.macAddress(resp.mac);
             esp_now_send(mac, reinterpret_cast<const uint8_t*>(&resp), sizeof(resp));
             return;
