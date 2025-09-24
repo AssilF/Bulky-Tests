@@ -173,6 +173,12 @@ unsigned long lastDiscoveryTime = 0;
 
 AudioFeedback audioFeedback([](uint16_t frequency) { ledcWriteTone(2, frequency); });
 
+namespace {
+void onEspNowPacket(const uint8_t *, const uint8_t *, int) {
+  audioFeedback.playPattern(AudioFeedback::Pattern::PacketReceived);
+}
+}  // namespace
+
 // Remove duplicate LinkStateSnapshot definition to avoid type mismatch
 // struct LinkStateSnapshot {
 //     bool paired = false;
@@ -508,7 +514,7 @@ void setup() {
   Comms::setPlatform(DEVICE_PLATFORM);
   Comms::setCustomId(DEVICE_CUSTOM_ID);
 
-  if (!Comms::init(WIFI_SSID, WIFI_PASSWORD, TCP_PORT)) {
+  if (!Comms::init(WIFI_SSID, WIFI_PASSWORD, TCP_PORT, onEspNowPacket)) {
     Serial.println("[COMMS] Failed to start echo listener");
   }
   Serial.print("[COMMS] SoftAP SSID: ");

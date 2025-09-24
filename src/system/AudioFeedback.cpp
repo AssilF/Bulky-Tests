@@ -46,6 +46,9 @@ constexpr AudioFeedback::Segment kPeerDisconnectedPattern[] = {
     {620, 140, 20},
     {360, 200, 0},
 };
+constexpr AudioFeedback::Segment kPacketReceivedPattern[] = {
+    {1800, 40, 0},
+};
 
 const AudioFeedback::Segment *patternData(AudioFeedback::Pattern pattern, size_t &length) {
   switch (pattern) {
@@ -85,6 +88,9 @@ const AudioFeedback::Segment *patternData(AudioFeedback::Pattern pattern, size_t
     case AudioFeedback::Pattern::PeerDisconnected:
       length = sizeof(kPeerDisconnectedPattern) / sizeof(kPeerDisconnectedPattern[0]);
       return kPeerDisconnectedPattern;
+    case AudioFeedback::Pattern::PacketReceived:
+      length = sizeof(kPacketReceivedPattern) / sizeof(kPacketReceivedPattern[0]);
+      return kPacketReceivedPattern;
   }
   length = 0;
   return nullptr;
