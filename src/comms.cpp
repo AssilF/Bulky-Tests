@@ -27,7 +27,6 @@ bool g_paired = false;
 bool g_waitingForAck = false;
 
 uint32_t g_lastPeerActivityMs = 0;
-uint32_t g_lastKeepaliveSentMs = 0;
 uint32_t g_lastBroadcastMs = 0;
 uint32_t g_lastConfirmMs = 0;
 
@@ -52,9 +51,6 @@ bool isBroadcast(const uint8_t mac[6]) {
 }
 
 void logPacket(const char *prefix, MessageType type, const uint8_t mac[6]) {
-    if (type == MessageType::MSG_KEEPALIVE) {
-        return;
-    }
     Serial.printf("[COMMS] %s type=%u to %s\n", prefix,
                   static_cast<unsigned>(type), macToString(mac).c_str());
 }
@@ -74,7 +70,6 @@ void resetLinkInternal(const char *reason) {
         std::memset(g_peerMac, 0, sizeof(g_peerMac));
         std::memset(&g_peerIdentity, 0, sizeof(g_peerIdentity));
         g_lastPeerActivityMs = 0;
-        g_lastKeepaliveSentMs = 0;
         g_lastConfirmMs = 0;
         g_hasCommand = false;
         g_lastCommandMs = 0;
@@ -158,7 +153,6 @@ void processPairRequest(const uint8_t *mac, const Packet &packet, uint32_t nowMs
     std::memcpy(g_peerMac, mac, sizeof(g_peerMac));
     g_paired = true;
     g_lastPeerActivityMs = nowMs;
-    g_lastKeepaliveSentMs = nowMs;
     portEXIT_CRITICAL(&g_mutex);
 }
 
@@ -196,7 +190,6 @@ void processPairConfirm(const uint8_t *mac, const Packet &packet, uint32_t nowMs
         std::memcpy(g_peerMac, mac, sizeof(g_peerMac));
         g_paired = true;
         g_lastPeerActivityMs = nowMs;
-        g_lastKeepaliveSentMs = nowMs;
         g_waitingForAck = false;
         g_hasCommand = false;
         g_lastCommandMs = 0;
@@ -219,22 +212,11 @@ void processPairAck(const uint8_t *mac, const Packet &packet, uint32_t nowMs) {
         g_paired = true;
         g_waitingForAck = false;
         g_lastPeerActivityMs = nowMs;
-        g_lastKeepaliveSentMs = nowMs;
         g_hasCommand = false;
         g_lastCommandMs = 0;
         portEXIT_CRITICAL(&g_mutex);
     }
     Serial.printf("[COMMS] Pair acknowledged by %s\n", packet.id.customId);
-}
-
-void processKeepalive(const uint8_t *mac, const Packet &packet, uint32_t nowMs) {
-    (void)packet;
-    if (!macEqual(mac, g_peerMac)) {
-        return;
-    }
-    portENTER_CRITICAL(&g_mutex);
-    g_lastPeerActivityMs = nowMs;
-    portEXIT_CRITICAL(&g_mutex);
 }
 
 void handlePacket(const uint8_t *mac, const Packet &packet, uint32_t nowMs) {
@@ -250,9 +232,6 @@ void handlePacket(const uint8_t *mac, const Packet &packet, uint32_t nowMs) {
         break;
     case MessageType::MSG_PAIR_ACK:
         processPairAck(mac, packet, nowMs);
-        break;
-    case MessageType::MSG_KEEPALIVE:
-        processKeepalive(mac, packet, nowMs);
         break;
     }
 }
@@ -306,12 +285,6 @@ void attemptPairing(uint32_t nowMs) {
 void maintainLink(uint32_t nowMs) {
     if (!g_paired) {
         return;
-    }
-    if (nowMs - g_lastKeepaliveSentMs >= BROADCAST_INTERVAL_MS) {
-        sendPacket(g_peerMac, MessageType::MSG_KEEPALIVE);
-        portENTER_CRITICAL(&g_mutex);
-        g_lastKeepaliveSentMs = nowMs;
-        portEXIT_CRITICAL(&g_mutex);
     }
     uint32_t lastActivity = 0;
     {
@@ -475,7 +448,6 @@ bool init(const char *ssid, const char *password, int tcpPort, esp_now_recv_cb_t
     std::memset(&g_peerIdentity, 0, sizeof(g_peerIdentity));
     std::memset(g_peerMac, 0, sizeof(g_peerMac));
     g_lastBroadcastMs = millis() - BROADCAST_INTERVAL_MS;
-    g_lastKeepaliveSentMs = 0;
     g_lastPeerActivityMs = 0;
     g_lastConfirmMs = 0;
     g_lastCommandMs = 0;
