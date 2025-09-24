@@ -180,10 +180,10 @@ AudioFeedback audioFeedback([](uint16_t frequency) { ledcWriteTone(2, frequency)
 
 // LinkStateSnapshot struct and loadLinkStateSnapshot function moved here for global visibility
 struct LinkStateSnapshot {
-    bool ilitePaired = false;
-    bool commandPeerSet = false;
-    uint8_t iliteMac[6] = {0};
-    uint8_t commandPeer[6] = {0};
+    bool paired = false;
+    Comms::Identity peerIdentity{};
+    uint8_t peerMac[6] = {0};
+    uint32_t lastActivityMs = 0;
     uint32_t lastCommandTimeMs = 0;
 };
 
@@ -191,10 +191,8 @@ static inline LinkStateSnapshot loadLinkStateSnapshot()
 {
     LinkStateSnapshot snapshot;
     portENTER_CRITICAL(&commsStateMux);
-    snapshot.ilitePaired = ilitePaired;
-    snapshot.commandPeerSet = commandPeerSet;
-    memcpy(snapshot.iliteMac, iliteMac, sizeof(iliteMac));
-    memcpy(snapshot.commandPeer, commandPeer, sizeof(commandPeer));
+    snapshot.paired = ilitePaired;
+    memcpy(snapshot.peerMac, iliteMac, sizeof(iliteMac));
     snapshot.lastCommandTimeMs = lastCommandTimeMs;
     portEXIT_CRITICAL(&commsStateMux);
     return snapshot;
@@ -211,13 +209,6 @@ const char *DEVICE_CUSTOM_ID = "Bulky-A10";
 
 Comms::ControlPacket command = {0};
 
-struct LinkStateSnapshot {
-    bool paired = false;
-    Comms::Identity peerIdentity{};
-    uint8_t peerMac[6] = {0};
-    uint32_t lastActivityMs = 0;
-    uint32_t lastCommandTimeMs = 0;
-};
 
 static LinkStateSnapshot linkStateSnapshot{};
 
@@ -344,10 +335,10 @@ void drawStatusUi(uint32_t nowMs) {
   }
 
   u8g2.setCursor(0, 32);
-  if (paired && linkState.lastCommandTimeMs != 0) {
-    uint32_t ageMs = nowMs >= linkState.lastCommandTimeMs
-                         ? nowMs - linkState.lastCommandTimeMs
-                         : (0xFFFFFFFFu - linkState.lastCommandTimeMs + nowMs + 1);
+  if (paired && link.lastCommandTimeMs != 0) {
+    uint32_t ageMs = nowMs >= link.lastCommandTimeMs
+                         ? nowMs - link.lastCommandTimeMs
+                         : (0xFFFFFFFFu - link.lastCommandTimeMs + nowMs + 1);
     u8g2.print("Cmd age: ");
     u8g2.print(ageMs / 1000);
     u8g2.print('s');
