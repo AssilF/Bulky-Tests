@@ -108,6 +108,9 @@ Packet makePacket(MessageType type) {
     packet.version = PROTOCOL_VERSION;
     packet.type = type;
     fillIdentityStrings(packet.id);
+    if (g_role == DeviceRole::Controlled) {
+        std::memset(packet.id.mac, 0, sizeof(packet.id.mac));
+    }
     packet.monotonicMs = millis();
     packet.reserved = 0;
     return packet;
@@ -151,11 +154,15 @@ void processPairRequest(const uint8_t *mac, const Packet &packet, uint32_t nowMs
     if (g_role != DeviceRole::Controlled) {
         return;
     }
-    (void)packet;
     ensurePeer(mac);
     sendPacket(mac, MessageType::MSG_IDENTITY_REPLY);
     portENTER_CRITICAL(&g_mutex);
+    g_peerIdentity = packet.id;
+    std::memcpy(g_peerIdentity.mac, mac, sizeof(g_peerIdentity.mac));
+    std::memcpy(g_peerMac, mac, sizeof(g_peerMac));
+    g_paired = true;
     g_lastPeerActivityMs = nowMs;
+    g_lastKeepaliveSentMs = nowMs;
     portEXIT_CRITICAL(&g_mutex);
 }
 
@@ -163,14 +170,14 @@ void processIdentityReply(const uint8_t *mac, const Packet &packet, uint32_t now
     if (g_role != DeviceRole::Controller) {
         return;
     }
-    (void)mac;
     DiscoveryInfo entry{};
     entry.identity = packet.id;
+    std::memcpy(entry.identity.mac, mac, sizeof(entry.identity.mac));
     entry.lastSeenMs = nowMs;
 
     portENTER_CRITICAL(&g_mutex);
     auto it = std::find_if(g_discovered.begin(), g_discovered.end(), [&](const DiscoveryInfo &existing) {
-        return macEqual(existing.identity.mac, packet.id.mac);
+        return macEqual(existing.identity.mac, mac);
     });
     if (it != g_discovered.end()) {
         *it = entry;
@@ -189,6 +196,7 @@ void processPairConfirm(const uint8_t *mac, const Packet &packet, uint32_t nowMs
     {
         portENTER_CRITICAL(&g_mutex);
         g_peerIdentity = packet.id;
+        std::memcpy(g_peerIdentity.mac, mac, sizeof(g_peerIdentity.mac));
         std::memcpy(g_peerMac, mac, sizeof(g_peerMac));
         g_paired = true;
         g_lastPeerActivityMs = nowMs;
@@ -210,6 +218,7 @@ void processPairAck(const uint8_t *mac, const Packet &packet, uint32_t nowMs) {
     {
         portENTER_CRITICAL(&g_mutex);
         g_peerIdentity = packet.id;
+        std::memcpy(g_peerIdentity.mac, mac, sizeof(g_peerIdentity.mac));
         std::memcpy(g_peerMac, mac, sizeof(g_peerMac));
         g_paired = true;
         g_waitingForAck = false;
@@ -233,10 +242,6 @@ void processKeepalive(const uint8_t *mac, const Packet &packet, uint32_t nowMs) 
 }
 
 void handlePacket(const uint8_t *mac, const Packet &packet, uint32_t nowMs) {
-    if (packet.version != PROTOCOL_VERSION) {
-        Serial.printf("[COMMS] Ignoring packet with mismatched version %u\n", packet.version);
-        return;
-    }
     switch (packet.type) {
     case MessageType::MSG_PAIR_REQ:
         processPairRequest(mac, packet, nowMs);

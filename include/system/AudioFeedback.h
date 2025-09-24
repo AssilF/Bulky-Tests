@@ -27,6 +27,7 @@ class AudioFeedback {
     MovementStop,
     PeerConnected,
     PeerDisconnected,
+    PacketReceived,
   };
 
   explicit AudioFeedback(std::function<void(uint16_t)> toneWriter);
