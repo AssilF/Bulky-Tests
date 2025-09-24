@@ -411,9 +411,7 @@ bool ensurePeer(const uint8_t mac[6]) {
         if (!esp_now_is_peer_exist(mac)) {
             esp_now_peer_info_t info{};
             std::memcpy(info.peer_addr, mac, 6);
-            info.channel = WIFI_CHANNEL;
             info.encrypt = false;
-            info.ifidx = WIFI_IF_STA;
             return esp_now_add_peer(&info) == ESP_OK;
         }
         return true;
@@ -423,9 +421,9 @@ bool ensurePeer(const uint8_t mac[6]) {
     }
     esp_now_peer_info_t peer{};
     std::memcpy(peer.peer_addr, mac, 6);
-    peer.channel = WIFI_CHANNEL;
+
     peer.encrypt = false;
-    peer.ifidx = WIFI_IF_STA;
+
     esp_err_t result = esp_now_add_peer(&peer);
     if (result != ESP_OK) {
         Serial.printf("[COMMS] Failed to add peer %s (err=%d)\n", macToString(mac).c_str(), result);
@@ -443,17 +441,23 @@ bool init(const char *ssid, const char *password, int tcpPort, esp_now_recv_cb_t
     g_initialized = false;
     WiFi.mode(WIFI_AP_STA);
     WiFi.setSleep(false);
-    WiFi.softAP(ssid, password, WIFI_CHANNEL, false, 1);
-    esp_wifi_set_channel(WIFI_CHANNEL, WIFI_SECOND_CHAN_NONE);
+    WiFi.setAutoConnect(false);
+    WiFi.setAutoReconnect(false);
+    WiFi.disconnect(false);
+    WiFi.setTxPower(WIFI_POWER_19_5dBm);
+    WiFi.softAP(ssid, password);
+    
+    // esp_wifi_set_channel(WIFI_CHANNEL, WIFI_SECOND_CHAN_NONE);
 
-    if (esp_now_init() != ESP_OK) {
-        Serial.println("[COMMS] esp_now_init failed");
-        return false;
-    }
+    // if (esp_now_init() != ESP_OK) {
+    //     Serial.println("[COMMS] esp_now_init failed");
+    //     return false;
+    // }
 
     updateSelfIdentity();
 
     g_userRecvCallback = recvCallback;
+    esp_now_init();
     esp_now_register_recv_cb(onDataRecv);
     esp_now_register_send_cb(onDataSent);
 

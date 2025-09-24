@@ -173,14 +173,17 @@ unsigned long lastDiscoveryTime = 0;
 
 AudioFeedback audioFeedback([](uint16_t frequency) { ledcWriteTone(2, frequency); });
 
-// LinkStateSnapshot struct and loadLinkStateSnapshot function moved here for global visibility
-struct LinkStateSnapshot {
-    bool paired = false;
-    Comms::Identity peerIdentity{};
-    uint8_t peerMac[6] = {0};
-    uint32_t lastActivityMs = 0;
-    uint32_t lastCommandTimeMs = 0;
-};
+// Remove duplicate LinkStateSnapshot definition to avoid type mismatch
+// struct LinkStateSnapshot {
+//     bool paired = false;
+//     Comms::Identity peerIdentity{};
+//     uint8_t peerMac[6] = {0};
+//     uint32_t lastActivityMs = 0;
+//     uint32_t lastCommandTimeMs = 0;
+// };
+
+// Declare commsStateMux for critical section protection
+static portMUX_TYPE commsStateMux = portMUX_INITIALIZER_UNLOCKED;
 
 static inline LinkStateSnapshot loadLinkStateSnapshot()
 {
@@ -258,7 +261,7 @@ void drawStatusUi(uint32_t nowMs) {
 
   
   ControlState state = getControlStateSnapshot();
-  LinkStateSnapshot link = linkStateManager.linkSnapshot();
+  auto link = linkStateManager.linkSnapshot();
   bool paired = link.paired;
   bool moving = state.speed > 0 && state.motion != STOP;
 
@@ -505,11 +508,8 @@ void setup() {
   Comms::setPlatform(DEVICE_PLATFORM);
   Comms::setCustomId(DEVICE_CUSTOM_ID);
 
-  WiFi.disconnect(true);
   if (!Comms::init(WIFI_SSID, WIFI_PASSWORD, TCP_PORT)) {
     Serial.println("[COMMS] Failed to start echo listener");
-  } else {
-    Serial.println("[COMMS] Echo listener ready");
   }
   Serial.print("[COMMS] SoftAP SSID: ");
   Serial.println(WIFI_SSID);
