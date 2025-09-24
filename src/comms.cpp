@@ -1,5 +1,5 @@
 #include "comms.h"
-
+#include <Arduino.h>
 #include <algorithm>
 #include <cstring>
 #include <cstdio>
@@ -7,6 +7,10 @@
 
 #include <esp_wifi.h>
 #include <freertos/FreeRTOS.h>
+#include <esp_now.h>
+#include <system/AudioFeedback.h>
+
+#define sound(hz) ledcWriteTone(2,hz)
 
 namespace Comms {
 namespace {
@@ -457,9 +461,41 @@ bool init(const char *ssid, const char *password, int tcpPort, esp_now_recv_cb_t
     updateSelfIdentity();
 
     g_userRecvCallback = recvCallback;
-    esp_now_init();
-    esp_now_register_recv_cb(onDataRecv);
-    esp_now_register_send_cb(onDataSent);
+    if(esp_now_init() != ESP_OK)
+    {
+        Serial.println("Failed to initialize ESPNOW");
+        sound(200);
+        delay(100);
+        sound(100);
+        delay(100);
+    }else
+    {
+        Serial.println("ESPNOW Initialized");
+    }
+
+    if(esp_now_register_recv_cb(onDataRecv)!= ESP_OK)
+    {
+        Serial.println("Failed To register RX Callback");
+        sound(400);
+        delay(100);
+        sound(200);
+        delay(100);
+    }else
+    {
+        Serial.println("RX Callback in place!");
+    }
+
+    if(esp_now_register_send_cb(onDataSent)!= ESP_OK)
+    {
+        Serial.println("Failed To register TX Callback");
+        sound(600);
+        delay(100);
+        sound(300);
+        delay(100);
+    }else
+    {
+        Serial.println("TX Callback in place!");
+    }
 
     ensurePeer(BroadcastMac);
 
