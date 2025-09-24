@@ -206,6 +206,55 @@ void drawStatusUi(uint32_t nowMs);
 const char *WIFI_SSID = "Bulky Telemetry";
 const char *WIFI_PASSWORD = "BulkyTelemetry";
 const int TCP_PORT = 8000;
+const char *DEVICE_PLATFORM = "Bulky";
+const char *DEVICE_CUSTOM_ID = "Bulky-A10";
+
+Comms::ControlPacket command = {0};
+
+struct LinkStateSnapshot {
+    bool paired = false;
+    Comms::Identity peerIdentity{};
+    uint8_t peerMac[6] = {0};
+    uint32_t lastActivityMs = 0;
+    uint32_t lastCommandTimeMs = 0;
+};
+
+static LinkStateSnapshot linkStateSnapshot{};
+
+static inline void storeLinkState(const Comms::LinkStatus &status)
+{
+    portENTER_CRITICAL(&commsStateMux);
+    linkStateSnapshot.paired = status.paired;
+    linkStateSnapshot.peerIdentity = status.peerIdentity;
+    memcpy(linkStateSnapshot.peerMac, status.peerMac, sizeof(linkStateSnapshot.peerMac));
+    linkStateSnapshot.lastActivityMs = status.lastActivityMs;
+    linkStateSnapshot.lastCommandTimeMs = status.lastCommandMs;
+    portEXIT_CRITICAL(&commsStateMux);
+}
+
+static inline LinkStateSnapshot loadLinkStateSnapshot()
+{
+    LinkStateSnapshot snapshot;
+    portENTER_CRITICAL(&commsStateMux);
+    snapshot = linkStateSnapshot;
+    portEXIT_CRITICAL(&commsStateMux);
+    return snapshot;
+}
+
+static inline void storeCommandSnapshot(const Comms::ControlPacket &value)
+{
+    portENTER_CRITICAL(&commandMux);
+    command = value;
+    portEXIT_CRITICAL(&commandMux);
+}
+
+static inline Comms::ControlPacket loadCommandSnapshot()
+{
+    portENTER_CRITICAL(&commandMux);
+    Comms::ControlPacket snapshot = command;
+    portEXIT_CRITICAL(&commandMux);
+    return snapshot;
+}
 
 void resetControlState()
 {
@@ -263,8 +312,8 @@ void drawStatusUi(uint32_t nowMs) {
 
   
   ControlState state = getControlStateSnapshot();
-  LinkStateSnapshot linkState = loadLinkStateSnapshot();
-  bool paired = linkState.ilitePaired;
+  LinkStateSnapshot link = loadLinkStateSnapshot();
+  bool paired = link.paired;
   bool moving = state.speed > 0 && state.motion != STOP;
 
   u8g2.clearBuffer();
@@ -275,16 +324,18 @@ void drawStatusUi(uint32_t nowMs) {
 
   u8g2.setCursor(0, 22);
   if (paired) {
-    u8g2.print("Link: ILITE ");
-    auto printHexByte = [&](uint8_t value) {
-      if (value < 0x10) {
-        u8g2.print('0');
-      }
-      u8g2.print(value, HEX);
-    };
-    printHexByte(linkState.iliteMac[4]);
-    u8g2.print(':');
-    printHexByte(linkState.iliteMac[5]);
+    u8g2.print("Link: ");
+    if (link.peerIdentity.customId[0] != '\0') {
+      u8g2.print(link.peerIdentity.customId);
+    } else {
+      String macStr = Comms::macToString(link.peerMac);
+      u8g2.print(macStr.c_str());
+    }
+    if (link.peerIdentity.platform[0] != '\0') {
+      u8g2.print(" (");
+      u8g2.print(link.peerIdentity.platform);
+      u8g2.print(')');
+    }
   } else {
     u8g2.print("Link: Searching");
     if (((nowMs / 500) % 2) == 0) {
@@ -351,46 +402,6 @@ void action()
   }
 }
 
-
-
-const unsigned long CONNECTION_TIMEOUT = 1000;
-
-static inline LinkStateSnapshot clearLinkState()
-{
-    LinkStateSnapshot previous;
-    portENTER_CRITICAL(&commsStateMux);
-    previous.ilitePaired = ilitePaired;
-    previous.commandPeerSet = commandPeerSet;
-    memcpy(previous.iliteMac, iliteMac, sizeof(iliteMac));
-    memcpy(previous.commandPeer, commandPeer, sizeof(commandPeer));
-    previous.lastCommandTimeMs = lastCommandTimeMs;
-    ilitePaired = false;
-    commandPeerSet = false;
-    memset(iliteMac, 0, sizeof(iliteMac));
-    memset(commandPeer, 0, sizeof(commandPeer));
-    lastCommandTimeMs = 0;
-    portEXIT_CRITICAL(&commsStateMux);
-    return previous;
-}
-
-
-void monitorConnection() {
-    LinkStateSnapshot state = loadLinkStateSnapshot();
-    if (!state.ilitePaired)
-        return;
-
-    uint32_t now = millis();
-    if (state.lastCommandTimeMs > 0 && now - state.lastCommandTimeMs > CONNECTION_TIMEOUT)
-    {
-        LinkStateSnapshot cleared = clearLinkState();
-        if (cleared.ilitePaired)
-        {
-            esp_now_del_peer(cleared.iliteMac);
-        }
-    }
-}
-
-
 void updateLinkAudioFeedback(uint32_t nowMs) {
   static bool wasPaired = false;
   static uint32_t lastPairingToneMs = 0;
@@ -398,7 +409,7 @@ void updateLinkAudioFeedback(uint32_t nowMs) {
   constexpr uint32_t kPairingToneIntervalMs = 2500;
 
   LinkStateSnapshot linkState = loadLinkStateSnapshot();
-  bool paired = linkState.ilitePaired;
+  bool paired = linkState.paired;
 
   if (paired) {
     if (!wasPaired) {
@@ -424,175 +435,23 @@ void updateLinkAudioFeedback(uint32_t nowMs) {
   }
 }
 
-
-static inline void storeCommandSnapshotFromISR(const Comms::ControlPacket &value)
-{
-    portENTER_CRITICAL_ISR(&commandMux);
-    command = value;
-    portEXIT_CRITICAL_ISR(&commandMux);
-}
-
-static inline void setLastCommandTimeMs(uint32_t value)
-{
-    portENTER_CRITICAL(&commsStateMux);
-    lastCommandTimeMs = value;
-    portEXIT_CRITICAL(&commsStateMux);
-}
-
-static inline void setLastCommandTimeMsFromISR(uint32_t value)
-{
-    portENTER_CRITICAL_ISR(&commsStateMux);
-    lastCommandTimeMs = value;
-    portEXIT_CRITICAL_ISR(&commsStateMux);
-}
-
-static inline void setIlitePeerFromISR(const uint8_t *mac)
-{
-    portENTER_CRITICAL_ISR(&commsStateMux);
-    memcpy(iliteMac, mac, sizeof(iliteMac));
-    ilitePaired = true;
-    portEXIT_CRITICAL_ISR(&commsStateMux);
-}
-
-static inline bool copyIliteMacFromISR(uint8_t dest[6])
-{
-    portENTER_CRITICAL_ISR(&commsStateMux);
-    bool paired = ilitePaired;
-    if (paired)
-    {
-        memcpy(dest, iliteMac, sizeof(iliteMac));
-    }
-    portEXIT_CRITICAL_ISR(&commsStateMux);
-    return paired;
-}
-
-static inline bool updateCommandPeerFromISR(const uint8_t *mac)
-{
-    portENTER_CRITICAL_ISR(&commsStateMux);
-    bool changed = !commandPeerSet || memcmp(commandPeer, mac, sizeof(commandPeer)) != 0;
-    if (changed)
-    {
-        memcpy(commandPeer, mac, sizeof(commandPeer));
-        commandPeerSet = true;
-    }
-    portEXIT_CRITICAL_ISR(&commsStateMux);
-    return changed;
-}
-
-static inline Comms::ControlPacket loadCommandSnapshot()
-{
-    portENTER_CRITICAL(&commandMux);
-    Comms::ControlPacket snapshot = command;
-    portEXIT_CRITICAL(&commandMux);
-    return snapshot;
-}
-
 void CommTask(void *pvParameters) {
     TickType_t lastWake = xTaskGetTickCount();
-    const TickType_t interval = pdMS_TO_TICKS(5);
+    const TickType_t interval = pdMS_TO_TICKS(20);
     while (true) {
+        Comms::loop();
 
-        monitorConnection();
-        LinkStateSnapshot state = loadLinkStateSnapshot();
-        if (!state.ilitePaired && millis() - lastDiscoveryTime > 1000) {
-            Comms::IdentityMessage msg = {};
-            msg.type = Comms::DRONE_IDENTITY;
-            strncpy(msg.identity, DRONE_ID, sizeof(msg.identity));
-            memcpy(msg.mac, selfMac, 6);
-            esp_now_send(Comms::BroadcastMac, (uint8_t *)&msg, sizeof(msg));
-            lastDiscoveryTime = millis();
-        }
-        vTaskDelayUntil(&lastWake, interval); // ~200 Hz for responsiveness
-    }
-}
-unsigned long lastHandshakeSent = 0;
-void onReceive(const uint8_t *mac, const uint8_t *incomingData, int len)
-{
-    if (len == sizeof(Comms::IdentityMessage))
-    {
-        Comms::IdentityMessage msg;
-        memcpy(&msg, incomingData, sizeof(msg));
-        unsigned long now = millis();
-        if (msg.type == Comms::SCAN_REQUEST)
-        {
-            if (now - lastHandshakeSent > HANDSHAKE_COOLDOWN)
-            {
-                if (!esp_now_is_peer_exist(mac))
-                {
-                    esp_now_peer_info_t peerInfo = {};
-                    memcpy(peerInfo.peer_addr, mac, 6);
-                    peerInfo.channel = 0;
-                    peerInfo.encrypt = false;
-                    esp_now_add_peer(&peerInfo);
-                }
-                Comms::IdentityMessage resp = {};
-                resp.type = Comms::DRONE_IDENTITY;
-                strncpy(resp.identity, DRONE_ID, sizeof(resp.identity));
-                memcpy(resp.mac, selfMac, 6);
-                esp_now_send(mac, (uint8_t *)&resp, sizeof(resp));
-                lastHandshakeSent = now;
-            }
+        Comms::LinkStatus status = Comms::getLinkStatus();
+        storeLinkState(status);
+
+        Comms::ControlPacket latest = {};
+        uint32_t commandTimestamp = 0;
+        bool hasCommand = Comms::receiveCommand(latest, &commandTimestamp);
+        if (hasCommand && status.paired) {
+            storeCommandSnapshot(latest);
         }
 
-
-        else if (msg.type == Comms::ILITE_IDENTITY)
-        {
-            uint8_t existingMac[6];
-            bool wasPaired = copyIliteMacFromISR(existingMac);
-            bool isNewPeer = !wasPaired || memcmp(existingMac, msg.mac, sizeof(existingMac)) != 0;
-            if (isNewPeer)
-            {
-                setIlitePeerFromISR(msg.mac);
-                updateCommandPeerFromISR(msg.mac);
-            }
-            esp_now_peer_info_t peerInfo = {};
-            memcpy(peerInfo.peer_addr, msg.mac, 6);
-            peerInfo.channel = 0;
-            peerInfo.encrypt = false;
-            if (!esp_now_is_peer_exist(msg.mac))
-            {
-                esp_now_add_peer(&peerInfo);
-            }
-            Comms::IdentityMessage ack = {};
-            ack.type = Comms::DRONE_ACK;
-            strncpy(ack.identity, DRONE_ID, sizeof(ack.identity));
-            memcpy(ack.mac, selfMac, 6);
-            esp_now_send(msg.mac, (uint8_t *)&ack, sizeof(ack));
-            lastHandshakeSent = now;
-        }
-
-        return;
-    }
-
-    if (len == sizeof(Comms::ControlPacket))
-    {
-        Comms::ControlPacket incoming;
-        memcpy(&incoming, incomingData, sizeof(incoming));
-
-        // Ignore commands from unknown devices
-        uint8_t pairedMac[6];
-        bool paired = copyIliteMacFromISR(pairedMac);
-        if (!paired || memcmp(mac, pairedMac, 6) != 0)
-        {
-            return;
-        }
-
-        storeCommandSnapshotFromISR(incoming);
-        uint32_t nowMs = xTaskGetTickCountFromISR() * portTICK_PERIOD_MS;
-        setLastCommandTimeMsFromISR(nowMs);
-
-        bool peerChanged = updateCommandPeerFromISR(mac);
-        if (peerChanged)
-        {
-            esp_now_peer_info_t peerInfo = {};
-            memcpy(peerInfo.peer_addr, mac, 6);
-            peerInfo.channel = 0;
-            peerInfo.encrypt = false;
-            if (!esp_now_is_peer_exist(mac))
-            {
-                esp_now_add_peer(&peerInfo);
-            }
-        }
+        vTaskDelayUntil(&lastWake, interval);
     }
 }
 
@@ -697,6 +556,9 @@ void setup() {
   u8g2.print("VDrop");
   u8g2.sendBuffer();
 
+  Comms::setPlatform(DEVICE_PLATFORM);
+  Comms::setCustomId(DEVICE_CUSTOM_ID);
+
   WiFi.disconnect(true);
   if (!Comms::init(WIFI_SSID, WIFI_PASSWORD, TCP_PORT)) {
     Serial.println("[COMMS] Failed to start echo listener");
@@ -707,6 +569,17 @@ void setup() {
   Serial.println(WIFI_SSID);
   Serial.print("[COMMS] SoftAP IP: ");
   Serial.println(WiFi.softAPIP());
+
+  Comms::Identity identity{};
+  Comms::fillSelfIdentity(identity);
+  Serial.print("[COMMS] Role: ");
+  Serial.println(identity.deviceType);
+  Serial.print("[COMMS] Platform: ");
+  Serial.println(identity.platform);
+  Serial.print("[COMMS] Custom ID: ");
+  Serial.println(identity.customId);
+  Serial.print("[COMMS] MAC: ");
+  Serial.println(Comms::macToString(identity.mac));
 
   ArduinoOTA.setHostname("Bulky");
   ArduinoOTA.onStart([]() {
