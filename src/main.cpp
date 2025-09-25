@@ -481,10 +481,10 @@ void setup() {
   ledcAttachPin(Buzzer_Pin,2);
 
   //interrupt assignments
-  // attachInterrupt(Encoder_Left_Top,LT_ISR,RISING);
-  // attachInterrupt(Encoder_Left_Bot,LB_ISR,RISING);
-  // attachInterrupt(Encoder_Right_Top,RT_ISR,RISING);
-  // attachInterrupt(Encoder_Right_Bot,RB_ISR,RISING);
+  attachInterrupt(Encoder_Left_Top,LT_ISR,RISING);
+  attachInterrupt(Encoder_Left_Bot,LB_ISR,RISING);
+  attachInterrupt(Encoder_Right_Top,RT_ISR,RISING);
+  attachInterrupt(Encoder_Right_Bot,RB_ISR,RISING);
 
 
   Serial.begin(115200);

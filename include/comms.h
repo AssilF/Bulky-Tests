@@ -52,10 +52,10 @@ struct ControlPacket {
 };
 
 struct TelemetryPacket {
-    uint8_t index;
-    uint8_t statusByte;
-    int16_t dataByte[8];
-    uint8_t okIndex;
+  byte index;
+  byte statusByte;
+  int dataByte[8];
+  byte okIndex;
 };
 #pragma pack(pop)
 
