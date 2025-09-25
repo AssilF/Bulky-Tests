@@ -8,6 +8,7 @@
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 #include <U8g2lib.h>
+#include <stdint.h>
 
 #include "sensors.h"
 #include "motion.h"
@@ -202,6 +203,79 @@ static inline LinkStateSnapshot loadLinkStateSnapshot()
     return snapshot;
 }
 
+namespace {
+
+constexpr uint8_t kButtonPump = 1u << 0;
+constexpr uint8_t kButtonFlash = 1u << 1;
+constexpr uint8_t kButtonBuzzer = 1u << 2;
+constexpr uint8_t kButtonCraneMode = 1u << 3;
+
+constexpr uint32_t kCommandTimeoutMs = 500;
+
+uint8_t scaleToServoAngle(uint8_t raw)
+{
+  // Map a controller byte (0-255) into a servo-friendly 0-180 range.
+  return static_cast<uint8_t>((static_cast<uint16_t>(raw) * 180u + 127u) / 255u);
+}
+
+uint32_t elapsedSince(uint32_t now, uint32_t then)
+{
+  if (then == 0)
+  {
+    return UINT32_MAX;
+  }
+  return now >= then ? now - then : (0xFFFFFFFFu - then + now + 1u);
+}
+
+void applyControlPacket(const Comms::ControlPacket &packet)
+{
+  if (controlStateMutex != nullptr)
+  {
+    xSemaphoreTake(controlStateMutex, portMAX_DELAY);
+  }
+
+  controlState.motion = packet.motionState;
+
+  int speed = static_cast<int>(packet.speed);
+  if (speed < 0)
+  {
+    speed = -speed;
+  }
+  if (speed > 100)
+  {
+    speed = 100;
+  }
+  controlState.speed = static_cast<uint8_t>(speed);
+
+  uint8_t buttons = packet.buttonStates[0];
+  controlState.pump = (buttons & kButtonPump) != 0;
+  controlState.flash = (buttons & kButtonFlash) != 0;
+  controlState.buzzer = (buttons & kButtonBuzzer) != 0;
+
+  bool craneModeRequested = (buttons & kButtonCraneMode) != 0;
+  controlState.cameraMode = !craneModeRequested;
+
+  uint8_t yaw = scaleToServoAngle(packet.buttonStates[1]);
+  uint8_t pitch = scaleToServoAngle(packet.buttonStates[2]);
+  if (controlState.cameraMode)
+  {
+    controlState.cameraYaw = yaw;
+    controlState.cameraPitch = pitch;
+  }
+  else
+  {
+    controlState.craneYaw = yaw;
+    controlState.cranePitch = pitch;
+  }
+
+  if (controlStateMutex != nullptr)
+  {
+    xSemaphoreGive(controlStateMutex);
+  }
+}
+
+}  // namespace
+
 void drawStatusUi(uint32_t nowMs);
 
 // ==================== Network configuration ====================
@@ -393,6 +467,10 @@ void updateLinkAudioFeedback(uint32_t nowMs) {
 void CommTask(void *pvParameters) {
     TickType_t lastWake = xTaskGetTickCount();
     const TickType_t interval = pdMS_TO_TICKS(20);
+    bool outputsInFailsafe = true;
+    bool lastPairedState = false;
+    bool commandSeen = false;
+    uint32_t lastCommandTimestamp = 0;
     while (true) {
         uint32_t nowMs = millis();
         Comms::loop();
@@ -405,6 +483,12 @@ void CommTask(void *pvParameters) {
         bool hasCommand = Comms::receiveCommand(latest, &commandTimestamp);
         if (hasCommand && status.paired) {
             linkStateManager.updateCommand(latest, commandTimestamp);
+            if (!commandSeen || commandTimestamp != lastCommandTimestamp) {
+                applyControlPacket(latest);
+                commandSeen = true;
+                outputsInFailsafe = false;
+                lastCommandTimestamp = commandTimestamp;
+            }
         }
 
         uint32_t lastCommandMs = hasCommand ? commandTimestamp : status.lastCommandMs;
@@ -437,6 +521,35 @@ void CommTask(void *pvParameters) {
             telemetry.okIndex = telemetry.index;
             Comms::sendTelemetry(telemetry);
         }
+
+        if (status.paired) {
+            if (!lastPairedState) {
+                resetControlState();
+                linkStateManager.clearCommand();
+                outputsInFailsafe = true;
+                commandSeen = false;
+                lastCommandTimestamp = 0;
+            }
+
+            if (commandSeen) {
+                uint32_t age = elapsedSince(nowMs, lastCommandTimestamp);
+                if (age > kCommandTimeoutMs && !outputsInFailsafe) {
+                    resetControlState();
+                    linkStateManager.clearCommand();
+                    outputsInFailsafe = true;
+                }
+            }
+        } else {
+            if (lastPairedState || commandSeen || !outputsInFailsafe) {
+                resetControlState();
+                linkStateManager.clearCommand();
+                outputsInFailsafe = true;
+            }
+            commandSeen = false;
+            lastCommandTimestamp = 0;
+        }
+
+        lastPairedState = status.paired;
 
         vTaskDelayUntil(&lastWake, interval);
     }
