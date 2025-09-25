@@ -509,4 +509,35 @@ bool paired() {
     return result;
 }
 
+bool sendTelemetry(const TelemetryPacket &packet) {
+    if (!g_initialized) {
+        return false;
+    }
+    uint8_t mac[6] = {0};
+    bool isPaired = false;
+    {
+        portENTER_CRITICAL(&g_mutex);
+        isPaired = g_paired;
+        std::memcpy(mac, g_peerMac, sizeof(mac));
+        portEXIT_CRITICAL(&g_mutex);
+    }
+    if (!isPaired) {
+        return false;
+    }
+    static const uint8_t kZeroMac[6] = {0};
+    if (std::memcmp(mac, kZeroMac, sizeof(mac)) == 0) {
+        return false;
+    }
+    if (!ensurePeer(mac)) {
+        return false;
+    }
+    esp_err_t err = esp_now_send(mac, reinterpret_cast<const uint8_t *>(&packet), sizeof(packet));
+    if (err != ESP_OK) {
+        Serial.printf("[COMMS] Failed to send telemetry to %s (err=%d)\n",
+                      macToString(mac).c_str(), err);
+        return false;
+    }
+    return true;
+}
+
 } // namespace Comms
