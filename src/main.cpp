@@ -504,10 +504,10 @@ void setup() {
   timerAlarmWrite(ShiftPWM_Handle, 3, true);
   timerAlarmEnable(ShiftPWM_Handle);
 
-  // SpeedRetrieval_Handle = timerBegin(1, 240, true);
-  // timerAttachInterrupt(SpeedRetrieval_Handle, &retreiveSpeeds, true);
-  // timerAlarmWrite(SpeedRetrieval_Handle, 100000, true); //let's take a speed sample each 76ms maybe ? seems like a good compromise instinctively or something.
-  // timerAlarmEnable(SpeedRetrieval_Handle);
+  SpeedRetrieval_Handle = timerBegin(1, 240, true);
+  timerAttachInterrupt(SpeedRetrieval_Handle, &retreiveSpeeds, true);
+  timerAlarmWrite(SpeedRetrieval_Handle, 100000, true); //let's take a speed sample each 76ms maybe ? seems like a good compromise instinctively or something.
+  timerAlarmEnable(SpeedRetrieval_Handle);
 
 
   //Servo/LED PWM BootUP  =============

@@ -255,7 +255,7 @@ void sendPairRequest(uint32_t nowMs) {
         return;
     }
     g_lastBroadcastMs = nowMs;
-    sendPacket(BroadcastMac, MessageType::MSG_PAIR_REQ);
+    // sendPacket(BroadcastMac, MessageType::MSG_PAIR_REQ);
 }
 
 void attemptPairing(uint32_t nowMs) {
@@ -303,9 +303,9 @@ void maintainLink(uint32_t nowMs) {
         lastActivity = g_lastPeerActivityMs;
         portEXIT_CRITICAL(&g_mutex);
     }
-    // if (lastActivity != 0 && nowMs - lastActivity > LINK_TIMEOUT_MS) {
-    //     resetLinkInternal("timeout");
-    // }
+    if (lastActivity != 0 && nowMs - lastActivity > LINK_TIMEOUT_MS) {
+        resetLinkInternal("timeout");
+    }
 }
 
 void onDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
@@ -550,37 +550,6 @@ bool paired() {
     bool result = g_paired;
     portEXIT_CRITICAL(&g_mutex);
     return result;
-}
-
-bool sendTelemetry(const TelemetryPacket &packet) {
-    if (!g_initialized) {
-        return false;
-    }
-    uint8_t mac[6] = {0};
-    bool isPaired = false;
-    {
-        portENTER_CRITICAL(&g_mutex);
-        isPaired = g_paired;
-        std::memcpy(mac, g_peerMac, sizeof(mac));
-        portEXIT_CRITICAL(&g_mutex);
-    }
-    if (!isPaired) {
-        return false;
-    }
-    static const uint8_t kZeroMac[6] = {0};
-    if (std::memcmp(mac, kZeroMac, sizeof(mac)) == 0) {
-        return false;
-    }
-    if (!ensurePeer(mac)) {
-        return false;
-    }
-    esp_err_t err = esp_now_send(mac, reinterpret_cast<const uint8_t *>(&packet), sizeof(packet));
-    if (err != ESP_OK) {
-        Serial.printf("[COMMS] Failed to send telemetry to %s (err=%d)\n",
-                      macToString(mac).c_str(), err);
-        return false;
-    }
-    return true;
 }
 
 } // namespace Comms
