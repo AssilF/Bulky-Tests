@@ -248,6 +248,9 @@ void sendPairRequest(uint32_t nowMs) {
     if (!g_initialized) {
         return;
     }
+    if (paired()) {
+        return;
+    }
     if (nowMs - g_lastBroadcastMs < BROADCAST_INTERVAL_MS) {
         return;
     }
@@ -300,9 +303,9 @@ void maintainLink(uint32_t nowMs) {
         lastActivity = g_lastPeerActivityMs;
         portEXIT_CRITICAL(&g_mutex);
     }
-    if (lastActivity != 0 && nowMs - lastActivity > LINK_TIMEOUT_MS) {
-        resetLinkInternal("timeout");
-    }
+    // if (lastActivity != 0 && nowMs - lastActivity > LINK_TIMEOUT_MS) {
+    //     resetLinkInternal("timeout");
+    // }
 }
 
 void onDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
