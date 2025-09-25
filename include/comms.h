@@ -49,6 +49,13 @@ struct ControlPacket {
     uint8_t motionState;
     uint8_t buttonStates[3];
 };
+
+struct TelemetryPacket {
+    uint8_t index;
+    uint8_t statusByte;
+    int16_t dataByte[8];
+    uint8_t okIndex;
+};
 #pragma pack(pop)
 
 struct DiscoveryInfo {
@@ -86,6 +93,8 @@ bool receiveCommand(ControlPacket &cmd, uint32_t *timestampMs = nullptr);
 uint32_t lastCommandTimestamp();
 LinkStatus getLinkStatus();
 bool paired();
+
+bool sendTelemetry(const TelemetryPacket &packet);
 
 extern const uint8_t BroadcastMac[6];
 

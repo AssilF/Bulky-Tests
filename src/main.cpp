@@ -394,6 +394,7 @@ void CommTask(void *pvParameters) {
     TickType_t lastWake = xTaskGetTickCount();
     const TickType_t interval = pdMS_TO_TICKS(20);
     while (true) {
+        uint32_t nowMs = millis();
         Comms::loop();
 
         Comms::LinkStatus status = Comms::getLinkStatus();
@@ -404,6 +405,37 @@ void CommTask(void *pvParameters) {
         bool hasCommand = Comms::receiveCommand(latest, &commandTimestamp);
         if (hasCommand && status.paired) {
             linkStateManager.updateCommand(latest, commandTimestamp);
+        }
+
+        uint32_t lastCommandMs = hasCommand ? commandTimestamp : status.lastCommandMs;
+        if (status.paired) {
+            Comms::TelemetryPacket telemetry{};
+            telemetry.index = 0;
+            telemetry.statusByte = 0;
+            telemetry.statusByte |= 0x01; // Paired
+            if (hasCommand) {
+                telemetry.statusByte |= 0x02; // New command received this tick
+            }
+            if (lastCommandMs != 0) {
+                uint32_t age = nowMs >= lastCommandMs
+                                    ? nowMs - lastCommandMs
+                                    : (0xFFFFFFFFu - lastCommandMs + nowMs + 1);
+                if (age < 500) {
+                    telemetry.statusByte |= 0x04; // Command recently updated
+                }
+            }
+
+            telemetry.dataByte[0] = static_cast<int16_t>(linePosition);
+            telemetry.dataByte[1] = static_cast<int16_t>(front_distance);
+            telemetry.dataByte[2] = static_cast<int16_t>(bot_distance);
+            telemetry.dataByte[3] = static_cast<int16_t>(IRBias);
+            ControlState control = getControlStateSnapshot();
+            telemetry.dataByte[4] = static_cast<int16_t>(control.speed);
+            telemetry.dataByte[5] = static_cast<int16_t>(batteryLevel);
+            telemetry.dataByte[6] = static_cast<int16_t>(average_count);
+            telemetry.dataByte[7] = 0;
+            telemetry.okIndex = telemetry.index;
+            Comms::sendTelemetry(telemetry);
         }
 
         vTaskDelayUntil(&lastWake, interval);
